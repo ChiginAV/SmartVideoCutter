@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="SmartVideoCutter/SmartVideoCutter.csproj" />
+  <Project Path="SmartVideoCutterWPF/SmartVideoCutterWPF.csproj" />
+</Solution>
