@@ -1,12 +1,17 @@
-﻿using Microsoft.Win32;
+﻿using System.Windows;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using Microsoft.Win32;
 
 namespace SmartVideoCutterWPF.ViewModels;
 
-public class SettingsViewModel
+public partial class SettingsViewModel : ObservableObject
 {
-    public string YoloPath { get; set; } = string.Empty;
-    public string ArcFacePath { get; set; } = string.Empty;
-    public string FfmpegPath { get; set; } = string.Empty;
+    public Window? OwnerWindow { get; set; }
+
+    [ObservableProperty] public string _yoloPath;
+    [ObservableProperty] public string _arcFacePath;
+    [ObservableProperty] public string _ffmpegPath;
 
     public SettingsViewModel()
     {
@@ -21,12 +26,41 @@ public class SettingsViewModel
         FfmpegPath = settings.FfmpegPath;
     }
 
-    public void Save()
+    [RelayCommand]
+    private void Save()
     {
         var settings = SettingsManager.CurrentSettings;
         settings.YoloPath = YoloPath;
         settings.ArcFacePath = ArcFacePath;
         settings.FfmpegPath = FfmpegPath;
         SettingsManager.Save();
+
+        OwnerWindow?.Close();
+    }
+
+    [RelayCommand]
+    private void BrowseFile(object? parameter)
+    {
+        var dialog = new OpenFileDialog { Filter = "Файлы|*.onnx;*.pt;*.bin;*.*|Все файлы|*.*" };
+
+        if (dialog.ShowDialog() == true)
+        {
+            if (parameter.Equals("YoloPath"))
+                YoloPath = dialog.FileName;
+            else if (parameter.Equals("ArcFacePath"))
+                ArcFacePath = dialog.FileName;
+        }
+    }
+
+    [RelayCommand]
+    private void BrowseFolder(object? parameter)
+    {
+        var dialog = new OpenFolderDialog();
+
+        if (dialog.ShowDialog() == true)
+        {
+            if (parameter.Equals("FfmpegPath"))
+                FfmpegPath = dialog.FolderName;
+        }
     }
 }
