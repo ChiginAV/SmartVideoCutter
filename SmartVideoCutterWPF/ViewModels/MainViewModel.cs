@@ -1,4 +1,5 @@
 ﻿using System.ComponentModel;
+using System.Windows;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.Input;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -17,6 +18,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty] private double _position;
     [ObservableProperty] private double _maxPosition;
+    [ObservableProperty] private int _volume = MediaPlayerService.DefaultVolume;
+    [ObservableProperty] private List<Keyframe> _keyframeList;
 
     public MediaPlayer? MediaPlayer => _mediaPlayerService.MediaPlayer;
 
@@ -40,13 +43,21 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    private void OpenFile()
+    private async void OpenFile()
     {
         var dlg = new OpenFileDialog { Filter = "Video files|*.avi;*.mov;*.mkv;*.mp4" };
-        if (dlg.ShowDialog() == true)
-        {
-            _mediaPlayerService.LoadMedia(dlg.FileName);
-        }
+        if (dlg.ShowDialog() != true)
+            return;
+
+        _mediaPlayerService.LoadMedia(dlg.FileName);
+
+        var progressDialog = new ProgressDialog("Анализ видео", "Получение ключевых кадров...");
+        progressDialog.Owner = Application.Current.MainWindow;
+        progressDialog.Show();
+
+        KeyframeList = await Task.Run(() => FFmpegService.GetVideoKeyframes(dlg.FileName));
+
+        progressDialog.Close();
     }
 
     [RelayCommand]
@@ -80,6 +91,20 @@ public partial class MainViewModel : ObservableObject, IDisposable
     partial void OnPositionChanged(double value)
     {
         _mediaPlayerService.SetPosition(value);
+    }
+
+    [RelayCommand]
+    private void SeekToTimestamp(Keyframe? keyframe)
+    {
+        if (keyframe != null)
+        {
+            _mediaPlayerService.SetPosition(keyframe.Timestamp * 1000);
+        }
+    }
+
+    partial void OnVolumeChanged(int value)
+    {
+        _mediaPlayerService.SetVolume(value);
     }
 
     #endregion

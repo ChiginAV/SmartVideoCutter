@@ -9,6 +9,8 @@ public class MediaPlayerService : IDisposable
 {
     #region Properties
 
+    public const int DefaultVolume = 50;
+
     private LibVLC? _libVlc;
     private MediaPlayer? _mediaPlayer;
     private DispatcherTimer? _timer;
@@ -53,6 +55,7 @@ public class MediaPlayerService : IDisposable
         Core.Initialize();
         _libVlc = new LibVLC();
         _mediaPlayer = new MediaPlayer(_libVlc);
+        _mediaPlayer.Volume = DefaultVolume;
 
         _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
         _timer.Tick += Timer_Tick;
@@ -130,6 +133,11 @@ public class MediaPlayerService : IDisposable
             Position = _mediaPlayer.Time;
             _isUpdatingFromTimer = false;
         }
+    }
+
+    public void SetVolume(int volume)
+    {
+        _mediaPlayer?.Volume = volume;
     }
 
     #endregion
