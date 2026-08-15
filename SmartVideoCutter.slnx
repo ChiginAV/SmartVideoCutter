@@ -1,4 +1,5 @@
 <Solution>
   <Project Path="SmartVideoCutter/SmartVideoCutter.csproj" />
-  <Project Path="SmartVideoCutterWPF/SmartVideoCutterWPF.csproj" />
+  <Project Path="SmartVideoCutterFlyleaf.Tests/SmartVideoCutterFlyleaf.Tests.csproj" />
+  <Project Path="SmartVideoCutterFlyleaf/SmartVideoCutterFlyleaf.csproj" />
 </Solution>
