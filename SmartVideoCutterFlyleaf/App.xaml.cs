@@ -12,5 +12,20 @@ public partial class App : Application
         base.OnStartup(e);
 
         SettingsManager.Load();
+
+        // глобальная обработка исключений
+        DispatcherUnhandledException += (s, e) =>
+        {
+            if (MainWindow?.DataContext is MainViewModel vm)
+                vm.StatusMessage = "Ошибка: " + e.Exception.Message;
+            e.Handled = true;
+        };
+
+        TaskScheduler.UnobservedTaskException += (s, e) =>
+        {
+            if (MainWindow?.DataContext is MainViewModel vm)
+                vm.StatusMessage = "Ошибка: " + e.Exception.Message;
+            e.SetObserved();
+        };
     }
 }

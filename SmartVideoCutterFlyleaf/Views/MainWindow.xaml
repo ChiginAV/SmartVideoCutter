@@ -1,5 +1,5 @@
 ﻿<Window
-    x:Class="SmartVideoCutterFlyleaf.MainWindow"
+    x:Class="SmartVideoCutterFlyleaf.Views.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -15,9 +15,14 @@
 
     <Grid>
         <Grid.RowDefinitions>
+            <!--  меню  -->
             <RowDefinition Height="Auto" />
+            <!--  командная панель  -->
             <RowDefinition Height="Auto" />
+            <!--  видео плеер и список ключевых кадров  -->
             <RowDefinition Height="*" />
+            <!--  статус-бар  -->
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <Grid.ColumnDefinitions>
@@ -101,6 +106,18 @@
                 </ib:Interaction.Triggers>
             </DataGrid>
         </Expander>
+
+        <!--  статус-бар  -->
+
+        <StatusBar
+            Grid.Row="3"
+            Grid.ColumnSpan="2"
+            Height="Auto">
+            <StatusBarItem>
+                <TextBlock Text="{Binding StatusMessage}" />
+            </StatusBarItem>
+        </StatusBar>
+
     </Grid>
 
 </Window>

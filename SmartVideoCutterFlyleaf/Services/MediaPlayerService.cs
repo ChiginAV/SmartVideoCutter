@@ -4,6 +4,8 @@ using System.Windows.Controls;
 using System.Windows.Threading;
 using FlyleafLib;
 using FlyleafLib.MediaPlayer;
+using OpenCvSharp;
+using OpenCvSharp.Extensions;
 
 
 namespace SmartVideoCutterFlyleaf.Services;
@@ -31,7 +33,7 @@ public class MediaPlayerService : IDisposable
         FlyleafLib.Engine.Start(new EngineConfig()
         {
             FFmpegPath = SettingsManager.CurrentSettings.FfmpegPath,
-            LogLevel = LogLevel.Debug,
+            //LogLevel = FlyleafLib.LogLevel.Debug,
             FFmpegHLSLiveSeek = true,
             UIRefresh = true,
             //FFmpegLoadProfile = Flyleaf.FFmpeg.LoadProfile.All
@@ -80,6 +82,28 @@ public class MediaPlayerService : IDisposable
     }
 
     public void SetVolume(int volume) => _flyleafPlayer?.Audio.Volume = volume;
+
+    /// <summary>
+    /// Получает текущий кадр (последний отрендеренный) как OpenCvSharp Mat (BGR).
+    /// Работает и во время паузы — снимок берётся из D3D11-текстуры рендера.
+    /// </summary>
+    public Mat? GetCurrentFrame()
+    {
+        if (_flyleafPlayer == null)
+            return null;
+
+        using var bitmap = _flyleafPlayer.TakeSnapshotToBitmap();
+        if (bitmap == null)
+            return null;
+
+        var bgra = bitmap.ToMat(); // CV_8UC4 (32bpp BGRA)
+
+        // BGRA → BGR: детектору нужны ровно 3 канала
+        var bgr = new Mat();
+        Cv2.CvtColor(bgra, bgr, ColorConversionCodes.BGRA2BGR);
+        bgra.Dispose();
+        return bgr;
+    }
 
     #endregion
 
