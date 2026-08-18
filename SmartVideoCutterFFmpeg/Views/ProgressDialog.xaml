@@ -1,0 +1,21 @@
+﻿<Window
+    x:Class="SmartVideoCutterFFmpeg.Views.ProgressDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="clr-namespace:SmartVideoCutterFFmpeg.Views"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    Title="ProgressDialog"
+    ResizeMode="NoResize"
+    SizeToContent="WidthAndHeight"
+    WindowStartupLocation="CenterOwner">
+    <StackPanel Width="300" Margin="20">
+        <TextBlock x:Name="MessageTextBlock"
+            Margin="0,0,0,10"
+            Text="Выполняется операция..."
+            TextWrapping="Wrap" />
+        <ProgressBar x:Name="ProgressBar"
+            Height="20"
+            IsIndeterminate="True" />
+    </StackPanel>
+</Window>

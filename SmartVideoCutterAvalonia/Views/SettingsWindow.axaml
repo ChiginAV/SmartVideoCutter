@@ -1,17 +1,22 @@
 ﻿<Window
-    x:Class="SmartVideoCutterFlyleaf.Views.SettingsWindow"
-    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    x:Class="SmartVideoCutterAvalonia.Views.SettingsWindow"
+    xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-    xmlns:local="clr-namespace:SmartVideoCutterFlyleaf.Views"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:vm="using:SmartVideoCutterAvalonia.ViewModels"
     Title="Settings"
     MinWidth="600"
     MaxWidth="1024"
+    x:DataType="vm:SettingsViewModel"
     SizeToContent="WidthAndHeight"
     WindowStartupLocation="CenterScreen"
-    WindowState="Normal"
     mc:Ignorable="d">
+
+    <Design.DataContext>
+        <vm:SettingsViewModel />
+    </Design.DataContext>
+
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -27,47 +32,7 @@
             <ColumnDefinition Width="100" />
         </Grid.ColumnDefinitions>
 
-        <!--  yolo  -->
-
-        <TextBlock
-            Margin="5"
-            Padding="5"
-            VerticalAlignment="Center"
-            Text="Файл yolo:" />
-        <TextBox
-            Grid.Column="1"
-            Margin="5"
-            Padding="5"
-            Text="{Binding Settings.YoloPath}" />
-        <Button
-            Grid.Column="2"
-            Margin="5"
-            Command="{Binding BrowseYoloFileCommand}"
-            Content="Выбрать" />
-
-        <!--  arcface  -->
-
-        <TextBlock
-            Grid.Row="1"
-            Margin="5"
-            Padding="5"
-            VerticalAlignment="Center"
-            Text="Файл arcface:" />
-        <TextBox
-            Grid.Row="1"
-            Grid.Column="1"
-            Margin="5"
-            Padding="5"
-            Text="{Binding Settings.ArcFacePath}" />
-        <Button
-            Grid.Row="1"
-            Grid.Column="2"
-            Margin="5"
-            Command="{Binding BrowseArcFaceFileCommand}"
-            Content="Выбрать" />
-
         <!--  ffmpeg  -->
-
         <TextBlock
             Grid.Row="2"
             Margin="5"
@@ -87,8 +52,44 @@
             Command="{Binding BrowseFfmpegFolderCommand}"
             Content="Выбрать" />
 
-        <!--  Статус валидации  -->
+        <!--  yolo  -->
+        <TextBlock
+            Margin="5"
+            Padding="5"
+            VerticalAlignment="Center"
+            Text="Файл yolo:" />
+        <TextBox
+            Grid.Column="1"
+            Margin="5"
+            Padding="5"
+            Text="{Binding Settings.YoloPath}" />
+        <Button
+            Grid.Column="2"
+            Margin="5"
+            Command="{Binding BrowseYoloFileCommand}"
+            Content="Выбрать" />
 
+        <!--  arcface  -->
+        <TextBlock
+            Grid.Row="1"
+            Margin="5"
+            Padding="5"
+            VerticalAlignment="Center"
+            Text="Файл arcface:" />
+        <TextBox
+            Grid.Row="1"
+            Grid.Column="1"
+            Margin="5"
+            Padding="5"
+            Text="{Binding Settings.ArcFacePath}" />
+        <Button
+            Grid.Row="1"
+            Grid.Column="2"
+            Margin="5"
+            Command="{Binding BrowseArcFaceFileCommand}"
+            Content="Выбрать" />
+
+        <!--  Статус валидации  -->
         <TextBlock
             Grid.Row="3"
             Grid.ColumnSpan="3"
@@ -98,7 +99,6 @@
             TextWrapping="Wrap" />
 
         <!--  Save  -->
-
         <Button
             Grid.Row="4"
             Grid.Column="1"

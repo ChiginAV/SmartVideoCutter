@@ -22,6 +22,7 @@ public class MediaPlayerService : IDisposable
     public Player? Player => _flyleafPlayer;
     public VideoInfo? VideoInfo { get; private set; }
 
+    public bool IsInitialized => _flyleafPlayer != null;
     public bool IsPlaying => _flyleafPlayer?.IsPlaying ?? false;
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -30,6 +31,9 @@ public class MediaPlayerService : IDisposable
 
     public void Initialize(Dispatcher dispatcher)
     {
+        if (_flyleafPlayer != null)
+            return; // движок уже запущен
+
         FlyleafLib.Engine.Start(new EngineConfig()
         {
             FFmpegPath = SettingsManager.CurrentSettings.FfmpegPath,

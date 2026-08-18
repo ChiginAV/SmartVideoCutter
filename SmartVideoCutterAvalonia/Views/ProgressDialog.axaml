@@ -1,0 +1,18 @@
+﻿<Window
+    x:Class="SmartVideoCutterAvalonia.Views.ProgressDialog"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="ProgressDialog"
+    CanResize="False"
+    SizeToContent="WidthAndHeight"
+    WindowStartupLocation="CenterOwner">
+    <StackPanel Width="300" Margin="20">
+        <TextBlock x:Name="MessageTextBlock"
+            Margin="0,0,0,10"
+            Text="Выполняется операция..."
+            TextWrapping="Wrap" />
+        <ProgressBar x:Name="ProgressBar"
+            Height="20"
+            IsIndeterminate="True" />
+    </StackPanel>
+</Window>

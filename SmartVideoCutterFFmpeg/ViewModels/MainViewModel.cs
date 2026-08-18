@@ -6,12 +6,11 @@ using System.Windows.Threading;
 using CommunityToolkit.Mvvm.Input;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.Win32;
-using FlyleafLib;
-using FlyleafLib.MediaPlayer;
 using OpenCvSharp;
+using System.Windows.Media.Imaging;
 
 
-namespace SmartVideoCutterFlyleaf.ViewModels;
+namespace SmartVideoCutterFFmpeg.ViewModels;
 
 public partial class MainViewModel : ObservableObject, IDisposable
 {
@@ -24,6 +23,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] private List<FaceBox> _faceBoxes = new();
     [ObservableProperty] private double _videoAspect; // width/height кадра, для letterbox в view
     [ObservableProperty] private int _selectedFaceIndex = -1; // индекс выбранной рамки (-1 = нет)
+    [ObservableProperty] private BitmapSource? _videoFrame; // кадр для Image в контроле плеера
+    [ObservableProperty] private long _positionMs; // текущее время (слайдер, метка)
+    [ObservableProperty] private long _durationMs; // длительность видео (слайдер)
+    [ObservableProperty] private bool _isMediaLoaded; // файл загружен (слайдер активен)
 
     private readonly MediaPlayerService _mediaPlayerService;
     private YoloFaceDetector? _faceDetector;
@@ -33,13 +36,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private SelectedFace? _selectedFace; // данные выбора (кроп) для ArcFace
     private readonly Dispatcher _uiDispatcher;
 
-    private Player? _mediaPlayer;
-
-    public Player? MediaPlayer
-    {
-        get => _mediaPlayer;
-        set => SetProperty(ref _mediaPlayer, value);
-    }
 
     public VideoInfo? VideoInfo => _mediaPlayerService.VideoInfo;
 
@@ -90,6 +86,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _mediaPlayerService.LoadMedia(FilePath);
     }
 
+
     [RelayCommand]
     private void OpenSettings()
     {
@@ -134,31 +131,32 @@ public partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             _mediaPlayerService.Initialize(Dispatcher.CurrentDispatcher);
-            _mediaPlayer = _mediaPlayerService.Player;
 
-            if (_mediaPlayer != null)
-            {
-                _mediaPlayer.PropertyChanged += OnPlayerPropertyChanged;
-                _mediaPlayer.PlaybackStopped += OnPlaybackStopped;
-                _mediaPlayer.SeekCompleted += OnSeekCompleted;
-            }
+            _mediaPlayerService.PropertyChanged += OnPlayerPropertyChanged;
+            _mediaPlayerService.PlaybackStopped += OnPlaybackStopped;
+            _mediaPlayerService.SeekCompleted += OnSeekCompleted;
         }
         catch (Exception ex)
         {
+            StatusMessage = "Ошибка инициализации плеера: " + ex.Message;
             System.Diagnostics.Debug.WriteLine($"Player init failed: {ex.Message}");
         }
     }
 
     private void OnPlayerPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(Player.Status))
+        if (e.PropertyName == nameof(MediaPlayerService.VideoFrame))
         {
-            StatusMessage = _mediaPlayer?.Status.ToString() ?? "—";
+            VideoFrame = _mediaPlayerService.VideoFrame;
+        }
+        else if (e.PropertyName == nameof(MediaPlayerService.Status))
+        {
+            StatusMessage = _mediaPlayerService.Status.ToString();
 
-            if (_mediaPlayer?.Status == Status.Paused)
+            if (_mediaPlayerService.Status == PlayerStatus.Paused)
             {
                 ClearFaceSelection(); // новый кадр — сбрасываем выбор
-                _lastCurTime = _mediaPlayer?.CurTime ?? 0;
+                _lastCurTime = _mediaPlayerService.CurTime;
                 _ = AnalyzeFaces();
             }
             else
@@ -167,22 +165,31 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 ClearFaceSelection();
             }
         }
-        else if (e.PropertyName == nameof(Player.CurTime))
+        else if (e.PropertyName == nameof(MediaPlayerService.CurTime))
         {
-            long t = _mediaPlayer?.CurTime ?? 0;
+            long t = _mediaPlayerService.CurTime;
             bool changed = t != _lastCurTime;
             _lastCurTime = t;
 
+            PositionMs = t; // слайдер и метка времени
+
             // Начало перемотки на паузе: убираем устаревшие рамки
             // (новые появятся после SeekCompleted)
-            if (changed && _mediaPlayer?.Status == Status.Paused)
+            if (changed && _mediaPlayerService.Status == PlayerStatus.Paused)
             {
                 FaceBoxes = new List<FaceBox>();
                 ClearFaceSelection();
             }
         }
+        else if (e.PropertyName == nameof(MediaPlayerService.DurationMs))
+        {
+            DurationMs = _mediaPlayerService.DurationMs;
+        }
+        else if (e.PropertyName == nameof(MediaPlayerService.IsMediaLoaded))
+        {
+            IsMediaLoaded = _mediaPlayerService.IsMediaLoaded;
+        }
     }
-
 
     private void OnSeekCompleted(object? sender, int ms)
     {
@@ -192,7 +199,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             if (ms < 0)
                 return; // перемотка не удалась
 
-            if (_mediaPlayer?.Status == Status.Paused)
+            if (_mediaPlayerService.Status == PlayerStatus.Paused)
                 _ = AnalyzeFaces(); // перемотка закончилась на паузе — рисуем новые рамки
         });
     }
@@ -201,21 +208,32 @@ public partial class MainViewModel : ObservableObject, IDisposable
     {
         _uiDispatcher.BeginInvoke(() =>
         {
-            StatusMessage = _mediaPlayer?.Status == Status.Failed
+            StatusMessage = _mediaPlayerService.Status == PlayerStatus.Failed
                 ? "Ошибка воспроизведения"
                 : "Воспроизведение завершено";
         });
     }
-
 
     [RelayCommand]
     private void SeekToTimestamp(Keyframe? keyframe)
     {
         if (keyframe != null)
         {
-            _mediaPlayerService.Player.SeekAccurate((int)keyframe.Timestamp);
+            _mediaPlayerService.SeekTo((int)keyframe.Timestamp);
         }
     }
+
+    [RelayCommand]
+    private void PlayPause() => _mediaPlayerService.PlayPause();
+
+    /// <summary>Перемотка со слайдера контрола плеера.</summary>
+    public void SeekToPosition(int ms) => _mediaPlayerService.SeekTo(ms);
+
+    public bool IsPlaying => _mediaPlayerService.IsPlaying;
+
+    public void Play() => _mediaPlayerService.Play();
+
+    public void Pause() => _mediaPlayerService.Pause();
 
     #endregion
 
@@ -236,14 +254,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-
-        // Запоминаем размеры ДО Task.Run — после Dispose к Mat нельзя обращаться
         double w = frame.Width, h = frame.Height;
 
         List<OpenCvSharp.Rect> rects;
         try
         {
-            // Mat живёт всё время Task.Run, но освобождается один раз, после
             rects = await Task.Run(() => detector.Detect(frame));
         }
         catch (Exception ex)
@@ -255,8 +270,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         frame.Dispose();
 
-        // Игнорируем устаревший результат: уже нажали play или сделали новый seek
-        if (seq != _faceAnalysisSeq || _mediaPlayer?.Status != Status.Paused)
+        if (seq != _faceAnalysisSeq || _mediaPlayerService.Status != PlayerStatus.Paused)
             return;
 
         VideoAspect = w / h;
@@ -268,6 +282,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             H = r.Height / h
         }).ToList();
     }
+
 
     /// Margin вокруг рамки лица при кропе для ArcFace (доля от размера рамки, на каждую сторону).
     private const double FaceCropMargin = 0.35;
@@ -298,7 +313,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
             // Заменяем предыдущий выбор (освобождаем старый кроп)
             _selectedFace?.Dispose();
-            _selectedFace = new SelectedFace(crop, boxPx, _mediaPlayer?.CurTime ?? 0);
+            _selectedFace = new SelectedFace(crop, boxPx, _mediaPlayerService.CurTime);
             SelectedFaceIndex = index;
             AnalyzeFileCommand.NotifyCanExecuteChanged(); // генератор не видит SelectedFaceIndex как зависимость
         }
@@ -387,10 +402,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         if (disposing)
         {
-            if (_mediaPlayer != null)
-            {
-                _mediaPlayer.PropertyChanged -= OnPlayerPropertyChanged;
-            }
+            _mediaPlayerService.PropertyChanged -= OnPlayerPropertyChanged;
+            _mediaPlayerService.PlaybackStopped -= OnPlaybackStopped;
+            _mediaPlayerService.SeekCompleted -= OnSeekCompleted;
 
             _mediaPlayerService.Dispose();
             _faceDetector?.Dispose();

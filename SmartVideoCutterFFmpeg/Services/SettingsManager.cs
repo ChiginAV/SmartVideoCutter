@@ -2,7 +2,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace SmartVideoCutterFlyleaf.Services;
+namespace SmartVideoCutterFFmpeg.Services;
 
 public static class SettingsManager
 {

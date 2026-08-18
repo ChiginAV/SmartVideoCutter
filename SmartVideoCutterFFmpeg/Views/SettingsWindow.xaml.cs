@@ -1,6 +1,6 @@
 ﻿using System.Windows;
 
-namespace SmartVideoCutterFlyleaf.Views;
+namespace SmartVideoCutterFFmpeg.Views;
 
 public partial class SettingsWindow : Window
 {

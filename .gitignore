@@ -1,4 +1,6 @@
 ﻿.idea/
+.roo/
 .vs/
 bin/
 obj/
+*.user

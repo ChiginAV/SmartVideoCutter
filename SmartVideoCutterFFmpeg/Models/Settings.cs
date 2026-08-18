@@ -1,6 +1,6 @@
 ﻿using CommunityToolkit.Mvvm.ComponentModel;
 
-namespace SmartVideoCutterFlyleaf.Models;
+namespace SmartVideoCutterFFmpeg.Models;
 
 public partial class Settings : ObservableObject
 {

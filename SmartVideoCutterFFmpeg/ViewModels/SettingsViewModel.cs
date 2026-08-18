@@ -3,7 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
 
-namespace SmartVideoCutterFlyleaf.ViewModels;
+namespace SmartVideoCutterFFmpeg.ViewModels;
 
 public partial class SettingsViewModel : ObservableObject
 {
