@@ -26,7 +26,7 @@ public enum PlayerStatus
 /// <summary>
 /// Простой видео-плеер БЕЗ звука: FFMediaToolkit (декод) + BitmapSource (рендер).
 /// Поверхность близка к Flyleaf: Status, CurTime, SeekTo, события
-/// (PropertyChanged, SeekCompleted, PlaybackStopped) и GetCurrentFrame() для YOLO.
+/// (PropertyChanged, SeekCompleted, PlaybackStopped) и GetCurrentFrame() для FaceAiSharp.
 /// </summary>
 public class MediaPlayerService : IDisposable
 {
@@ -37,17 +37,22 @@ public class MediaPlayerService : IDisposable
 
     private MediaFile? _mediaFile;
     private BitmapSource? _frame; // отрендеренный кадр (immutable Bgr24)
-    private byte[]? _frameBuffer; // contiguous BGR-копия последнего кадра (для YOLO)
+    private byte[]? _frameBuffer; // contiguous BGR-копия последнего кадра (для FaceAiSharp)
     private int _frameW, _frameH;
+    private int _frameStride; // байт в строке кадра (FrameStride потока; = w*3 для типовых ширин)
     private GCHandle _frameHandle; // pinned _frameBuffer для TryGetNextFrame/TryGetFrame
+    private int _frameByteCount; // логический конец кадра (FrameByteCount); дальше — sentinel-хвост
+    private long _decodedFrames; // счётчик декодированных кадров (для сообщений sentinel)
+    private int _sentinelHits; // сколько раз залогирован обнаруженный overrun (макс. 5)
     private int _uiUpdatePending; // 0/1: есть ли pending-колбэк обновления кадра на UI
 
     private volatile BitmapSource? _pendingFrame; // готовый кадр, ожидающий передачи на UI
     private TimeSpan _lastUiFrame; // время последнего UI-кадра (троттлинг)
     private static readonly TimeSpan UiFrameInterval = TimeSpan.FromMilliseconds(33); // ~30 fps
 
-    // --- даунскейл для отображения (YOLO получает полный кадр из _frameBuffer) ---
+    // --- даунскейл для отображения (FaceAiSharp получает полный кадр из _frameBuffer) ---
     private const int MaxDisplayWidth = 960; // максимальная ширина кадра для экрана
+    private const int SentinelPadding = 64; // хвост под SIMD-оверран sws_scale: фикс + sentinel-доказательство
     private Mat? _displaySrc; // полный кадр как Mat (переиспользуется)
     private Mat? _displayDst; // уменьшенный кадр как Mat (переиспользуется)
     private byte[]? _displayBytes; // пиксели уменьшенного кадра (переиспользуется)
@@ -100,6 +105,12 @@ public class MediaPlayerService : IDisposable
         // FFMediaToolkit требует DLL shared-сборки FFmpeg 7.x в этой папке
         FFmpegLoader.FFmpegPath = path;
         FFmpegLoader.LoadFFmpeg();
+
+        // Нативные логи ffmpeg → Debug: если краш повторится, в выводе видно точное место
+        // (декодер/sws_scale). Оставить на время проверки, затем можно убрать.
+        FFmpegLoader.SetupLogging();
+        FFmpegLoader.LogCallback += msg => Debug.WriteLine($"[ffmpeg] {msg}");
+
         IsInitialized = true;
     }
 
@@ -116,6 +127,7 @@ public class MediaPlayerService : IDisposable
             _frameHandle.Free();
         _frame = null;
         _frameBuffer = null;
+        VideoInfo = null;
         _position = TimeSpan.Zero;
         RaiseUi(() =>
         {
@@ -123,6 +135,7 @@ public class MediaPlayerService : IDisposable
             OnPropertyChanged(nameof(CurTime));
             OnPropertyChanged(nameof(DurationMs));
             OnPropertyChanged(nameof(IsMediaLoaded));
+            OnPropertyChanged(nameof(VideoInfo));
         });
 
         _loadCts?.Cancel();
@@ -139,6 +152,9 @@ public class MediaPlayerService : IDisposable
         GCHandle handle = default;
         byte[]? buffer = null;
         int w = 0, h = 0;
+        int stride = 0;
+        int frameByteCount = 0;
+        double fps = 0;
         bool ok = false;
         TimeSpan pos = TimeSpan.Zero;
 
@@ -148,6 +164,9 @@ public class MediaPlayerService : IDisposable
             {
                 StreamsToLoad = MediaMode.Video,
                 VideoPixelFormat = ImagePixelFormat.Bgr24,
+                DecoderThreads = 1, // отключаем frame threading: при auto h264 переиспользует
+                                    // AVFrame->data, и sws_scale может читать освобождённую
+                                    // память → повреждение кучи (краш только на mp4)
                 DemuxerOptions = new ContainerOptions { SeekToAny = true }
             };
             mediaFile = MediaFile.Open(filePath, options);
@@ -165,12 +184,24 @@ public class MediaPlayerService : IDisposable
             var size = video.Info.FrameSize;
             w = size.Width;
             h = size.Height;
-            buffer = new byte[w * h * 3];
-            handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+            stride = video.FrameStride; // stride, который ожидает TryGetFrame/TryGetNextFrame
+            frameByteCount = video.FrameByteCount;
 
-            ok = video.TryGetFrame(TimeSpan.Zero, handle.AddrOfPinnedObject(), w * 3);
+            fps = video.Info.AvgFrameRate;
+
+            // +SentinelPadding: хвост за кадром. sws_scale (SIMD) может дописать до 64 байт
+            // за последнюю строку; раньше это была чужая управляемая память → краш GC.
+            buffer = new byte[frameByteCount + SentinelPadding];
+            handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+            for (int i = frameByteCount; i < buffer.Length; i++)
+                buffer[i] = 0xAA; // sentinel
+
+            ok = video.TryGetFrame(TimeSpan.Zero, handle.AddrOfPinnedObject(), stride);
             if (ok)
+            {
                 pos = video.Position;
+                VerifySentinel(buffer, frameByteCount);
+            }
         }
         catch (Exception ex)
         {
@@ -197,7 +228,11 @@ public class MediaPlayerService : IDisposable
             _frameHandle = handle;
             _frameW = w;
             _frameH = h;
+            _frameStride = stride;
+            _frameByteCount = frameByteCount;
             _position = pos;
+
+            VideoInfo = new VideoInfo { Width = w, Height = h, Fps = fps };
 
             // даунскейл для отображения: окно jauh меньше 4K, не стоит копировать 25 МБ/кадр в BitmapSource (LOH-GC = фризы)
             _dispW = Math.Min(w, MaxDisplayWidth);
@@ -258,7 +293,7 @@ public class MediaPlayerService : IDisposable
 
     /// <summary>
     /// Точная перемотка на ms. Работает из любого состояния; после seek на паузе
-    /// поднимает SeekCompleted(ms) — ViewModel по нему запускает YOLO.
+    /// поднимает SeekCompleted(ms) — ViewModel по нему запускает FaceAiSharp.
     /// </summary>
     public void SeekTo(int ms)
     {
@@ -274,7 +309,9 @@ public class MediaPlayerService : IDisposable
         var video = _mediaFile.Video!;
         bool ok;
         lock (_frameLock)
-            ok = video.TryGetFrame(time, _frameHandle.AddrOfPinnedObject(), _frameW * 3);
+            ok = video.TryGetFrame(time, _frameHandle.AddrOfPinnedObject(), _frameStride);
+        if (ok)
+            VerifySentinel(_frameBuffer!, _frameByteCount);
 
         if (!ok)
         {
@@ -296,7 +333,7 @@ public class MediaPlayerService : IDisposable
 
     #endregion
 
-    #region Frame for YOLO
+    #region Frame for FaceAiSharp
 
     /// <summary>
     /// Текущий кадр как OpenCvSharp Mat (BGR, CV_8UC3).
@@ -311,8 +348,69 @@ public class MediaPlayerService : IDisposable
 
             // явная копия: буфер сервиса переиспользуется следующим декодом
             var mat = new Mat(_frameH, _frameW, MatType.CV_8UC3);
-            Marshal.Copy(_frameBuffer, 0, mat.Data, _frameW * _frameH * 3);
+            FillMatFromStrided(_frameBuffer, _frameStride, _frameW, _frameH, mat);
             return mat;
+        }
+    }
+
+    /// <summary>
+    /// Заполняет Mat (BGR, CV_8UC3) из буфера с произвольным stride.
+    /// При stride == w*3 — прямой Marshal.Copy; иначе — построчно.
+    /// </summary>
+    private static void FillMatFromStrided(byte[] src, int srcStride, int w, int h, Mat dst)
+    {
+        int rowBytes = w * 3;
+        if (srcStride == rowBytes)
+        {
+            Marshal.Copy(src, 0, dst.Data, rowBytes * h);
+            return;
+        }
+        for (int y = 0; y < h; y++)
+            Marshal.Copy(src, y * srcStride, dst.Data + y * rowBytes, rowBytes);
+    }
+
+    /// <summary>
+    /// Копирует буфер с произвольным stride в row-aligned byte[] (BGR).
+    /// При stride == w*3 возвращает исходный массив без копирования.
+    /// </summary>
+    private static byte[] CopyStridedToBytes(byte[] src, int srcStride, int w, int h)
+    {
+        int rowBytes = w * 3;
+        if (srcStride == rowBytes)
+            return src;
+        var dst = new byte[rowBytes * h];
+        for (int y = 0; y < h; y++)
+            Buffer.BlockCopy(src, y * srcStride, dst, y * rowBytes, rowBytes);
+        return dst;
+    }
+
+    /// <summary>
+    /// Диагностика overrun'а: проверяет, не дописал ли sws_scale в sentinel-хвост за кадром.
+    /// Если да — прямое доказательство, что нативка писала за пределы буфера (раньше — чужая куча).
+    /// </summary>
+    private void VerifySentinel(byte[] buffer, int logicalEnd)
+    {
+        for (int i = logicalEnd; i < buffer.Length; i++)
+        {
+            if (buffer[i] != 0xAA)
+            {
+                int last = i;
+                for (int j = i + 1; j < buffer.Length; j++)
+                {
+                    if (buffer[j] != 0xAA)
+                        last = j;
+                    else
+                        break;
+                }
+                if (_sentinelHits < 5)
+                {
+                    _sentinelHits++;
+                    Debug.WriteLine($"[SENTINEL] OVERRUN #{_sentinelHits}: sws_scale wrote {last - i + 1} byte(s) past the frame " +
+                        $"buffer (offsets {i}..{last}; logical end {logicalEnd}, buffer {buffer.Length}) at frame #{_decodedFrames}. " +
+                        $"Heap corruption confirmed; padding now absorbs it.");
+                }
+                return;
+            }
         }
     }
 
@@ -336,7 +434,7 @@ public class MediaPlayerService : IDisposable
             {
                 // даунскейл: полный кадр -> уменьшенный. Mats переиспользуются,
                 // аллоцируется только (маленький) внутренний буфер BitmapSource.
-                Marshal.Copy(buffer, 0, _displaySrc.Data, w * h * 3);
+                FillMatFromStrided(buffer, _frameStride, w, h, _displaySrc);
                 Cv2.Resize(_displaySrc, _displayDst, new OpenCvSharp.Size(_dispW, _dispH), 0, 0,
                     InterpolationFlags.Area);
                 Marshal.Copy(_displayDst.Data, _displayBytes, 0, _displayBytes.Length);
@@ -345,7 +443,8 @@ public class MediaPlayerService : IDisposable
             else
             {
                 // видео не шире MaxDisplayWidth — без даунскейла
-                bmp = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgr24, null, buffer, w * 3);
+                var pixels = CopyStridedToBytes(buffer, _frameStride, w, h); // == buffer при w*3
+                bmp = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgr24, null, pixels, w * 3);
             }
         }
 
@@ -393,7 +492,7 @@ public class MediaPlayerService : IDisposable
         {
             var video = _mediaFile!.Video!;
             var ptr = _frameHandle.AddrOfPinnedObject();
-            int stride = _frameW * 3;
+            int stride = _frameStride;
 
             while (!token.IsCancellationRequested)
             {
@@ -401,6 +500,11 @@ public class MediaPlayerService : IDisposable
                 lock (_frameLock)
                 {
                     ok = video.TryGetNextFrame(ptr, stride);
+                }
+                if (ok)
+                {
+                    _decodedFrames++;
+                    VerifySentinel(_frameBuffer!, _frameByteCount);
                 }
 
                 if (!ok)

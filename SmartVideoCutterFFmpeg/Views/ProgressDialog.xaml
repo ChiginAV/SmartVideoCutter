@@ -17,5 +17,12 @@
         <ProgressBar x:Name="ProgressBar"
             Height="20"
             IsIndeterminate="True" />
+        <Button x:Name="CancelButton"
+            Width="90"
+            Margin="0,12,0,0"
+            HorizontalAlignment="Right"
+            Content="Отмена"
+            IsCancel="True" />
     </StackPanel>
 </Window>
+

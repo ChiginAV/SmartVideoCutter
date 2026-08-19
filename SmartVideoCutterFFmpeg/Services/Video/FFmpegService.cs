@@ -1,6 +1,9 @@
 ﻿using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
+using System.Threading;
 using OpenCvSharp;
 
 
@@ -8,74 +11,9 @@ namespace SmartVideoCutterFFmpeg.Services.Video;
 
 public class FFmpegService
 {
-    public static VideoInfo GetVideoInfo(string videoPath)
-    {
-        var ffprobePath = Path.Combine(SettingsManager.CurrentSettings.FfmpegPath, "ffprobe.exe");
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = ffprobePath,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        psi.ArgumentList.Add("-v"); // уровень детализации логов
-        psi.ArgumentList.Add("error");
-        psi.ArgumentList.Add("-select_streams"); // выбор конкретных потоков для анализа
-        psi.ArgumentList.Add("v:0"); // первое видео
-        psi.ArgumentList.Add("-show_entries"); // секция данных и ее поля
-        psi.ArgumentList.Add("stream=r_frame_rate,width,height"); // format | packet | frame
-        psi.ArgumentList.Add("-of"); // output format
-        psi.ArgumentList.Add("json"); // csv=p=0 | json
-        psi.ArgumentList.Add(videoPath);
-
-        using var process = new Process { StartInfo = psi };
-        process.Start();
-
-        using var doc = JsonDocument.Parse(process.StandardOutput.ReadToEnd());
-        process.WaitForExit();
-
-        string frameRateFraction = doc.RootElement.GetProperty("streams")[0].GetProperty("r_frame_rate").GetString();
-        string[] parts = frameRateFraction.Split('/');
-        double fps = double.Parse(parts[0], CultureInfo.InvariantCulture) /
-                     double.Parse(parts[1], CultureInfo.InvariantCulture);
-
-        int width = doc.RootElement.GetProperty("streams")[0].GetProperty("width").GetInt32();
-        int height = doc.RootElement.GetProperty("streams")[0].GetProperty("height").GetInt32();
-
-        return new VideoInfo { Fps = fps, Width = width, Height = height };
-    }
-
     public static List<Keyframe> GetVideoKeyframes(string videoPath)
     {
-        var ffprobePath = Path.Combine(SettingsManager.CurrentSettings.FfmpegPath, "ffprobe.exe");
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = ffprobePath,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        psi.ArgumentList.Add("-v"); // уровень детализации логов
-        psi.ArgumentList.Add("error");
-        psi.ArgumentList.Add("-select_streams"); // выбор конкретных потоков для анализа
-        psi.ArgumentList.Add("v:0"); // первое видео
-        psi.ArgumentList.Add("-show_entries"); // секция данных и ее поля
-        psi.ArgumentList.Add("packet=pts_time,flags"); // format | packet | frame
-        //psi.ArgumentList.Add("-skip_frame nokey"); // получить только ключевые кадры (не работает в packet)
-        psi.ArgumentList.Add("-of"); // output format
-        psi.ArgumentList.Add("json"); // csv=p=0 | json
-        psi.ArgumentList.Add(videoPath);
-
-        using var process = new Process { StartInfo = psi };
-        process.Start();
-
-        using var stream = process.StandardOutput.BaseStream;
-        using var doc = JsonDocument.Parse(stream);
-        process.WaitForExit();
+        using var doc = GetInfoFromFfprobe(videoPath, "packet=pts_time,flags");
 
         var keyframes = new List<Keyframe>();
 
@@ -105,6 +43,38 @@ public class FFmpegService
         return keyframes;
     }
 
+    private static JsonDocument GetInfoFromFfprobe(string videoPath, string entries)
+    {
+        var ffprobePath = Path.Combine(SettingsManager.CurrentSettings.FfmpegPath, "ffprobe.exe");
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = ffprobePath,
+            RedirectStandardOutput = true, // stderr НЕ редиректим: он не нужен, а незакрытый stderr-pipe = deadlock (см. 9.6)
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        psi.ArgumentList.Add("-v"); // уровень детализации логов
+        psi.ArgumentList.Add("error");
+        psi.ArgumentList.Add("-select_streams"); // выбор конкретных потоков для анализа
+        psi.ArgumentList.Add("v:0"); // первое видео
+        psi.ArgumentList.Add("-show_entries"); // секция данных и ее поля
+        psi.ArgumentList.Add(entries); // format | packet | frame
+        psi.ArgumentList.Add("-of"); // output format
+        psi.ArgumentList.Add("json"); // csv=p=0 | json
+        psi.ArgumentList.Add(videoPath);
+        // "-skip_frame nokey" (получить только ключевые кадры) не работает в packet
+
+        using var process = new Process { StartInfo = psi };
+        process.Start();
+
+        // читаем весь stdout до WaitForExit — иначе возможен deadlock при полном буфере
+        string output = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+
+        return JsonDocument.Parse(output);
+    }
+
     /// Один кадр в BGR по таймстампу (для распознавания).
     public static Mat ExtractFrame(string videoPath, long timestampMs, int width, int height)
     {
@@ -114,10 +84,13 @@ public class FFmpegService
         {
             FileName = ffmpegPath,
             RedirectStandardOutput = true,
-            RedirectStandardError = true,
+            RedirectStandardError = true, // 9.9.2: stderr → память (CaptureStderrAsync) — нет спама в консоли, deadlock исключён
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        psi.ArgumentList.Add("-hide_banner"); // 9.9.2: без баннера и build config
+        psi.ArgumentList.Add("-loglevel");
+        psi.ArgumentList.Add("error"); // только ошибки
         psi.ArgumentList.Add("-ss"); // быстрый seek: от ближайшего keyframe не позже таймстампа
         psi.ArgumentList.Add((timestampMs / 1000.0).ToString(CultureInfo.InvariantCulture));
         psi.ArgumentList.Add("-i");
@@ -132,6 +105,7 @@ public class FFmpegService
 
         using var process = new Process { StartInfo = psi };
         process.Start();
+        var stderr = AttachStderrCapture(process); // фоновое опустошение stderr-pipe (иначе deadlock, см. 9.6)
 
         int size = width * height * 3;
         var buffer = new byte[size];
@@ -145,13 +119,139 @@ public class FFmpegService
         }
 
         process.WaitForExit();
+        string errText;
+        lock (stderr) errText = stderr.ToString();
 
         if (read < size)
-            throw new IOException($"Не удалось прочитать кадр на {timestampMs} мс (прочитано {read} из {size} байт)");
+            throw new IOException($"Не удалось прочитать кадр на {timestampMs} мс (прочитано {read} из {size} байт). ffmpeg: {Tail(errText, 500)}");
 
-        // Mat(rows, cols, type, byte[]) — internal в OpenCvSharp4, поэтому через SetArray
+        // Mat(rows, cols, type, byte[]) — internal в OpenCvSharp4, а SetArray(byte[]) — только CV_8UC1.
+        // Копируем байты BGR в нативный буфер Mat: Marshal.Copy — статический метод,
+        // mat.Data (nint) неявно преобразуется в IntPtr, unsafe не нужен.
         var mat = new Mat(height, width, MatType.CV_8UC3);
-        mat.SetArray(buffer); // копирует байты BGR в нативный буфер Mat
+        Marshal.Copy(buffer, 0, mat.Data, buffer.Length);
         return mat;
+    }
+
+    /// Экспорт отрезков без перекодирования. ranges — [startMs, endMs), отсортированы, не пересекаются.
+    /// Экспорт отрезков без перекодирования. ranges — [startMs, endMs), отсортированы, не пересекаются.
+    public static void ExportSegments(string videoPath, string outputPath,
+        IReadOnlyList<(double StartMs, double EndMs)> ranges, IProgress<int> progress, CancellationToken ct = default)
+    {
+        if (ranges.Count == 1)
+        {
+            CopyRange(videoPath, outputPath, ranges[0].StartMs, ranges[0].EndMs, ct);
+            progress.Report(1);
+            return;
+        }
+
+        string ext = Path.GetExtension(videoPath);
+        var tempDir = Path.Combine(Path.GetTempPath(), "SmartVideoCutter_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var files = new List<string>();
+            for (int i = 0; i < ranges.Count; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var file = Path.Combine(tempDir, $"seg_{i:000}{ext}");
+                CopyRange(videoPath, file, ranges[i].StartMs, ranges[i].EndMs, ct);
+                files.Add(file);
+                progress.Report(i + 1);
+            }
+
+            // concat demuxer: все сегменты из одного источника → -c copy допустим
+            var listFile = Path.Combine(tempDir, "concat.txt");
+            File.WriteAllLines(listFile, files.Select(f => $"file '{f}'"));
+
+            RunFfmpeg(new[]
+            {
+                "-y", "-f", "concat", "-safe", "0", "-i", listFile,
+                "-c", "copy", outputPath
+            }, "склеить отрезки", ct);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(tempDir, true);
+            }
+            catch
+            {
+                /* временные файлы — не критично */
+            }
+        }
+    }
+
+    /// Один отрезок [startMs, endMs) без перекодирования.
+    /// -ss перед -i + -c copy: ffmpeg перемотает ровно на ключевой кадр — наши границы и есть ключевые кадры.
+    private static void CopyRange(string videoPath, string outputPath, double startMs, double endMs, CancellationToken ct)
+    {
+        RunFfmpeg(new[]
+        {
+            "-y", "-ss", (startMs / 1000.0).ToString(CultureInfo.InvariantCulture),
+            "-i", videoPath,
+            "-t", ((endMs - startMs) / 1000.0).ToString(CultureInfo.InvariantCulture),
+            "-c", "copy", outputPath
+        }, $"извлечь отрезок {startMs:0}–{endMs:0} мс", ct);
+    }
+
+    /// Запуск ffmpeg.exe.
+    /// stderr редиректится и опустошается фоном в память (CaptureStderrAsync, 9.9) —
+    /// pipe не заполняется, deadlock (9.6) исключён, консоль не получает вывод ffmpeg.
+    /// Отмена: по срабатыванию ct процесс убивается, после чего бросается OperationCanceledException.
+    private static void RunFfmpeg(IReadOnlyList<string> args, string what, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = Path.Combine(SettingsManager.CurrentSettings.FfmpegPath, "ffmpeg.exe"),
+            RedirectStandardError = true, // 9.9.3: stderr → память — прогрессные строки не в консоль
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        psi.ArgumentList.Add("-hide_banner"); // 9.9.3
+        psi.ArgumentList.Add("-loglevel");
+        psi.ArgumentList.Add("error"); // только ошибки
+        foreach (var a in args)
+            psi.ArgumentList.Add(a);
+
+        using var process = new Process { StartInfo = psi };
+        process.Start();
+        var stderr = AttachStderrCapture(process); // фоновое опустошение stderr-pipe (иначе deadlock, см. 9.6)
+        using var reg = ct.Register(() =>
+        {
+            try { process.Kill(true); } catch { /* процесс мог уже завершиться */ }
+        });
+        process.WaitForExit();
+        string errText;
+        lock (stderr) errText = stderr.ToString();
+        if (ct.IsCancellationRequested)
+            throw new OperationCanceledException();
+        if (process.ExitCode != 0)
+            throw new IOException($"FFmpeg: не удалось {what} (код {process.ExitCode}). ffmpeg: {Tail(errText, 500)}");
+    }
+
+    /// Фоновое чтение stderr процесса в память (9.9): опустошение pipe исключает deadlock (9.6),
+    /// консоль не получает вывод ffmpeg. Вызывающий читает StringBuilder после WaitForExit.
+    /// Событийный BeginErrorReadLine (а не Task.Run) — без дженериков/inference, канонический паттерн .NET.
+    private static StringBuilder AttachStderrCapture(Process process)
+    {
+        var sb = new StringBuilder();
+        process.ErrorDataReceived += (_, e) =>
+        {
+            if (e.Data != null)
+                lock (sb) sb.AppendLine(e.Data);
+        };
+        process.BeginErrorReadLine();
+        return sb;
+    }
+
+    /// Хвост текста для сообщений об ошибках (9.9).
+    private static string Tail(string text, int max)
+    {
+        text = text.Trim();
+        if (text.Length == 0)
+            return "(пусто)";
+        return text.Length <= max ? text : "..." + text[^max..];
     }
 }

@@ -36,6 +36,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private bool _disposed;
     private long _lastCurTime;
     private SelectedFace? _selectedFace; // данные выбора (кроп) для ArcFace
+    private bool _isAnalyzed; // анализ выполнен — кнопка Export может активироваться
     private readonly Dispatcher _uiDispatcher;
 
 
@@ -82,6 +83,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
         ClearFaceSelection();
         VideoAspect = 0;
 
+        foreach (var kf in KeyframeList)
+            kf.PropertyChanged -= OnKeyframePropertyChanged;
+
+        _isAnalyzed = false;
+        ExportFileCommand.NotifyCanExecuteChanged();
+
         KeyframeList = new List<Keyframe>();
         IsKeyframePanelExpanded = false;
 
@@ -115,11 +122,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
         AnalyzeFileCommand.NotifyCanExecuteChanged();
     }
 
-    [RelayCommand]
-    private void ExportFile()
+    private void OnKeyframePropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (e.PropertyName == nameof(Keyframe.IsSelected))
+            ExportFileCommand.NotifyCanExecuteChanged();
     }
-
 
     #region Player
 
@@ -356,33 +363,181 @@ public partial class MainViewModel : ObservableObject, IDisposable
         if (service == null || reference == null || videoInfo == null)
             return;
 
-        var progressDialog = new ProgressDialog("Анализ видео", "Поиск лица по ключевым кадрам...");
-        progressDialog.Owner = Application.Current.MainWindow;
-        progressDialog.Show();
-
         int w = videoInfo.Width, h = videoInfo.Height;
 
-        KeyframeList = await Task.Run(() =>
+        // 1. Список ключевых кадров (ffprobe, быстро) — чтобы знать общее число
+        var keyframes = await Task.Run(() => FFmpegService.GetVideoKeyframes(FilePath));
+        if (keyframes.Count == 0)
+            return;
+
+        // 2. Окно с детерминированным прогрессом: maximum = число ключевых кадров
+        var progressDialog = new ProgressDialog("Анализ видео", "Поиск лица по ключевым кадрам...",
+            indeterminate: false, maximum: keyframes.Count);
+        progressDialog.Owner = Application.Current.MainWindow;
+        progressDialog.Show();
+        var ct = progressDialog.Cts.Token;
+
+        // 3. Детекция + embedding по каждому кадру, прогресс после каждого.
+        // Отмена: выходим до следующей итерации (текущий ExtractFrame/Detect доделается — это быстро).
+        List<Keyframe> result = keyframes; // на ошибке ниже return до использования
+        Exception? error = null;
+        try
         {
-            var keyframes = FFmpegService.GetVideoKeyframes(FilePath);
-            foreach (var kf in keyframes)
+            result = await Task.Run(() =>
             {
-                using var frame = FFmpegService.ExtractFrame(FilePath, (long)kf.Timestamp, w, h);
-                kf.IsSelected = service.Detect(frame).Any(f =>
-                    f.Landmarks != null &&
-                    service.GenerateReferenceEmbedding(frame, f.BoxPx, f.Landmarks).Dot(reference) >= 0.42);
-            }
+                for (int i = 0; i < keyframes.Count; i++)
+                {
+                    if (ct.IsCancellationRequested)
+                        break;
+                    var kf = keyframes[i];
+                    using var frame = FFmpegService.ExtractFrame(FilePath, (long)kf.Timestamp, w, h);
+                    kf.IsSelected = service.Detect(frame).Any(f =>
+                        f.Landmarks != null &&
+                        service.GenerateReferenceEmbedding(frame, f.BoxPx, f.Landmarks).Dot(reference) >= 0.42);
+                    progressDialog.UpdateProgress(i + 1);
+                    progressDialog.UpdateMessage($"Поиск лица по ключевым кадрам... ({i + 1}/{keyframes.Count})");
+                }
 
-            return keyframes;
-        });
+                return keyframes;
+            });
+        }
+        catch (Exception ex)
+        {
+            // без catch исключение из ExtractFrame в async void методе = краш всего приложения
+            error = ex;
+            System.Diagnostics.Debug.WriteLine($"Analyze failed: {ex}");
+        }
 
+        // ВАЖНО: состояние отмены фиксировать ДО Close(): WPF синхронно вызывает OnClosed,
+        // а ProgressDialog.OnClosed → Cts.Cancel() (страховка 9.6) — после Close() токен
+        // всегда отменён, даже при нормальном завершении (баг 9.9: «Анализ отменён» на успехе).
+        bool cancelled = ct.IsCancellationRequested;
+        progressDialog.Close();
+
+        if (error != null)
+        {
+            StatusMessage = "Анализ не удался";
+            return;
+        }
+
+        if (cancelled)
+        {
+            // отмена: состояние не меняем — KeyframeList прежний, Export не включаем
+            StatusMessage = "Анализ отменён";
+            return;
+        }
+
+        KeyframeList = result;
         IsKeyframePanelExpanded = true;
 
-        progressDialog.Close();
+        _isAnalyzed = true;
+        foreach (var kf in KeyframeList)
+            kf.PropertyChanged += OnKeyframePropertyChanged;
+        ExportFileCommand.NotifyCanExecuteChanged();
+        StatusMessage = $"Анализ завершён: {KeyframeList.Count(k => k.IsSelected)}/{KeyframeList.Count} ключевых кадров с лицом";
     }
 
 
     private bool CanAnalyzeFile() => SelectedFaceIndex >= 0;
+
+    #endregion
+
+    #region Export
+
+    [RelayCommand(CanExecute = nameof(CanExportFile))]
+    private async void ExportFile()
+    {
+        var segments = BuildSegments(KeyframeList, _mediaPlayerService.DurationMs);
+        if (segments.Count == 0)
+        {
+            StatusMessage = "Нет выбранных ключевых кадров";
+            return;
+        }
+
+        var dlg = new SaveFileDialog
+        {
+            Filter = "Video files|*.mp4;*.mkv;*.mov;*.avi",
+            FileName = GetUniqueFileName(FilePath, "_FaceCut")
+        };
+        if (dlg.ShowDialog() != true)
+            return;
+
+        var progressDialog = new ProgressDialog("Экспорт видео", "Сборка отрезков...",
+            indeterminate: false, maximum: segments.Count);
+        progressDialog.Owner = Application.Current.MainWindow;
+
+        // работа стартует ДО ShowDialog: код после ShowDialog выполнится только после его закрытия
+        var task = Task.Run(() =>
+        {
+            // Progress<T> доставляет отчёты на UI-поток (захваченный SynchronizationContext)
+            var progress = new Progress<int>(p =>
+            {
+                progressDialog.UpdateProgress(p);
+                progressDialog.UpdateMessage($"Сборка отрезков... ({p}/{segments.Count})");
+            });
+            FFmpegService.ExportSegments(FilePath, dlg.FileName, segments, progress, progressDialog.Cts.Token);
+        });
+
+        // по завершении работы (успех или ошибка) закрываем диалог, если пользователь его ещё не закрыл
+        _ = task.ContinueWith(_ => progressDialog.Close(), TaskScheduler.FromCurrentSynchronizationContext());
+
+        try
+        {
+            progressDialog.ShowDialog(); // модально: основное окно заблокировано
+            await task;
+            StatusMessage = $"Сохранено: {dlg.FileName}";
+        }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Экспорт отменён";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = "Экспорт не удался";
+            System.Diagnostics.Debug.WriteLine($"Export failed: {ex.Message}");
+        }
+        finally
+        {
+            progressDialog.Close(); // страховка; повторный Close — no-op
+        }
+    }
+
+    private bool CanExportFile() => _isAnalyzed && KeyframeList.Any(k => k.IsSelected);
+
+    /// Отрезки: от выбранного ключевого кадра до следующего ключевого (или до конца видео).
+    /// Соседние выбранные кадры сливаются в один непрерывный отрезок.
+    private static List<(double StartMs, double EndMs)> BuildSegments(IReadOnlyList<Keyframe> keyframes,
+        double durationMs)
+    {
+        var segments = new List<(double, double)>();
+        for (int i = 0; i < keyframes.Count; i++)
+        {
+            if (!keyframes[i].IsSelected)
+                continue;
+            int j = i;
+            while (j + 1 < keyframes.Count && keyframes[j + 1].IsSelected)
+                j++;
+            double end = (j + 1 < keyframes.Count) ? keyframes[j + 1].Timestamp : durationMs;
+            segments.Add((keyframes[i].Timestamp, end));
+            i = j;
+        }
+
+        return segments;
+    }
+
+    /// Имя = оригинал + суффикс; при коллизии — «имя (1).ext», «имя (2).ext», … (конвенция Windows).
+    private static string GetUniqueFileName(string originalPath, string suffix)
+    {
+        string dir = Path.GetDirectoryName(originalPath) ?? ".";
+        string name = Path.GetFileNameWithoutExtension(originalPath) + suffix;
+        string ext = Path.GetExtension(originalPath);
+
+        string candidate = Path.Combine(dir, name + ext);
+        int n = 1;
+        while (File.Exists(candidate))
+            candidate = Path.Combine(dir, $"{name} ({n++}){ext}");
+        return candidate;
+    }
 
     #endregion
 

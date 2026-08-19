@@ -1,8 +1,10 @@
-﻿namespace SmartVideoCutterFFmpeg.Models.Video;
+﻿using CommunityToolkit.Mvvm.ComponentModel;
 
-public class Keyframe
+namespace SmartVideoCutterFFmpeg.Models.Video;
+
+public partial class Keyframe : ObservableObject
 {
-    public int Index { get; set; }
-    public bool IsSelected { get; set; }
-    public double Timestamp { get; set; }
+    [ObservableProperty] private int _index;
+    [ObservableProperty] private bool _isSelected;
+    [ObservableProperty] private double _timestamp;
 }
