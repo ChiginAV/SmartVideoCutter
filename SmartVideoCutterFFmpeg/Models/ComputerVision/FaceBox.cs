@@ -1,4 +1,4 @@
-﻿namespace SmartVideoCutterFFmpeg.Models;
+﻿namespace SmartVideoCutterFFmpeg.Models.ComputerVision;
 
 /// Рамка лица в нормализованных координатах (0..1) относительно кадра.
 public class FaceBox

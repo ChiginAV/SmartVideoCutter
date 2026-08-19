@@ -1,6 +1,9 @@
 ﻿global using SmartVideoCutterFFmpeg.Models;
+global using SmartVideoCutterFFmpeg.Models.ComputerVision;
+global using SmartVideoCutterFFmpeg.Models.Video;
 global using SmartVideoCutterFFmpeg.Services;
-global using SmartVideoCutterFFmpeg.Services.FaceDetection;
+global using SmartVideoCutterFFmpeg.Services.ComputerVision;
+global using SmartVideoCutterFFmpeg.Services.Video;
 global using SmartVideoCutterFFmpeg.ViewModels;
 global using SmartVideoCutterFFmpeg.Views;
 global using System.Diagnostics;

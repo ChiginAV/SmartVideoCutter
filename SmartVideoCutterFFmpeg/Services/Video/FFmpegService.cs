@@ -1,11 +1,10 @@
-﻿using System.Diagnostics;
-using System.Globalization;
+﻿using System.Globalization;
 using System.IO;
 using System.Text.Json;
-using System.Windows;
+using OpenCvSharp;
 
 
-namespace SmartVideoCutterFFmpeg.Services;
+namespace SmartVideoCutterFFmpeg.Services.Video;
 
 public class FFmpegService
 {
@@ -104,5 +103,55 @@ public class FFmpegService
         }
 
         return keyframes;
+    }
+
+    /// Один кадр в BGR по таймстампу (для распознавания).
+    public static Mat ExtractFrame(string videoPath, long timestampMs, int width, int height)
+    {
+        var ffmpegPath = Path.Combine(SettingsManager.CurrentSettings.FfmpegPath, "ffmpeg.exe");
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = ffmpegPath,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        psi.ArgumentList.Add("-ss"); // быстрый seek: от ближайшего keyframe не позже таймстампа
+        psi.ArgumentList.Add((timestampMs / 1000.0).ToString(CultureInfo.InvariantCulture));
+        psi.ArgumentList.Add("-i");
+        psi.ArgumentList.Add(videoPath);
+        psi.ArgumentList.Add("-frames:v");
+        psi.ArgumentList.Add("1");
+        psi.ArgumentList.Add("-f");
+        psi.ArgumentList.Add("rawvideo");
+        psi.ArgumentList.Add("-pix_fmt");
+        psi.ArgumentList.Add("bgr24");
+        psi.ArgumentList.Add("pipe:1");
+
+        using var process = new Process { StartInfo = psi };
+        process.Start();
+
+        int size = width * height * 3;
+        var buffer = new byte[size];
+        int read = 0;
+        while (read < size)
+        {
+            int n = process.StandardOutput.BaseStream.Read(buffer, read, size - read);
+            if (n <= 0)
+                break;
+            read += n;
+        }
+
+        process.WaitForExit();
+
+        if (read < size)
+            throw new IOException($"Не удалось прочитать кадр на {timestampMs} мс (прочитано {read} из {size} байт)");
+
+        // Mat(rows, cols, type, byte[]) — internal в OpenCvSharp4, поэтому через SetArray
+        var mat = new Mat(height, width, MatType.CV_8UC3);
+        mat.SetArray(buffer); // копирует байты BGR в нативный буфер Mat
+        return mat;
     }
 }

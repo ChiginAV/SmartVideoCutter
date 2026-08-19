@@ -8,6 +8,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.Win32;
 using OpenCvSharp;
 using System.Windows.Media.Imaging;
+using FaceAiSharp.Extensions; // расширение Dot(float[], float[]) для порога «тот же человек»
 
 
 namespace SmartVideoCutterFFmpeg.ViewModels;
@@ -29,7 +30,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _isMediaLoaded; // файл загружен (слайдер активен)
 
     private readonly MediaPlayerService _mediaPlayerService;
-    private YoloFaceDetector? _faceDetector;
+    private FaceAiSharpService? _faceService;
+    private List<DetectedFace> _detectedFaces = new();
     private int _faceAnalysisSeq;
     private bool _disposed;
     private long _lastCurTime;
@@ -53,7 +55,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         try
         {
-            _faceDetector = new YoloFaceDetector();
+            _faceService = new FaceAiSharpService();
         }
         catch (Exception ex)
         {
@@ -241,25 +243,25 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task AnalyzeFaces()
     {
-        var detector = _faceDetector;
+        var service = _faceService;
         var frame = _mediaPlayerService.GetCurrentFrame();
         int seq = ++_faceAnalysisSeq;
 
         if (frame == null)
             return;
 
-        if (detector == null)
+        if (service == null)
         {
-            StatusMessage = "Укажите файл модели YOLO в настройках (Settings) и перезапустите приложение";
+            StatusMessage = "Не удалось инициализировать FaceAiSharp (проверьте папку onnx в bin)";
             return;
         }
 
         double w = frame.Width, h = frame.Height;
 
-        List<OpenCvSharp.Rect> rects;
+        List<DetectedFace> faces;
         try
         {
-            rects = await Task.Run(() => detector.Detect(frame));
+            faces = await Task.Run(() => service.Detect(frame));
         }
         catch (Exception ex)
         {
@@ -273,24 +275,27 @@ public partial class MainViewModel : ObservableObject, IDisposable
         if (seq != _faceAnalysisSeq || _mediaPlayerService.Status != PlayerStatus.Paused)
             return;
 
+        _detectedFaces = faces;
         VideoAspect = w / h;
-        FaceBoxes = rects.Select(r => new FaceBox
+        FaceBoxes = faces.Select(f => new FaceBox
         {
-            X = r.X / w,
-            Y = r.Y / h,
-            W = r.Width / w,
-            H = r.Height / h
+            X = f.BoxPx.X / w,
+            Y = f.BoxPx.Y / h,
+            W = f.BoxPx.Width / w,
+            H = f.BoxPx.Height / h
         }).ToList();
     }
 
-
-    /// Margin вокруг рамки лица при кропе для ArcFace (доля от размера рамки, на каждую сторону).
-    private const double FaceCropMargin = 0.35;
-
     /// Выбирает рамку лица по индексу: подсвечивает её и готовит кроп для ArcFace.
+    /// Выбирает рамку лица по индексу: подсвечивает её и считает embedding ArcFace.
     public void SelectFace(int index)
     {
-        if (index < 0 || index >= FaceBoxes.Count)
+        if (index < 0 || index >= FaceBoxes.Count || index >= _detectedFaces.Count)
+            return;
+
+        var service = _faceService;
+        var face = _detectedFaces[index];
+        if (service == null || face.Landmarks == null)
             return;
 
         var frame = _mediaPlayerService.GetCurrentFrame();
@@ -299,21 +304,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         try
         {
-            var box = FaceBoxes[index];
+            float[] embedding;
+            try
+            {
+                embedding = service.GenerateReferenceEmbedding(frame, face.BoxPx, face.Landmarks);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Embedding failed: {ex.Message}");
+                return;
+            }
 
-            // Рамка в пикселях исходного кадра
-            var boxPx = new OpenCvSharp.Rect(
-                (int)(box.X * frame.Width),
-                (int)(box.Y * frame.Height),
-                (int)(box.W * frame.Width),
-                (int)(box.H * frame.Height));
-
-            // Кроп с margin для ArcFace
-            var crop = CropFaceWithMargin(frame, boxPx);
-
-            // Заменяем предыдущий выбор (освобождаем старый кроп)
-            _selectedFace?.Dispose();
-            _selectedFace = new SelectedFace(crop, boxPx, _mediaPlayerService.CurTime);
+            _selectedFace = new SelectedFace(embedding, face.BoxPx, _mediaPlayerService.CurTime);
             SelectedFaceIndex = index;
             AnalyzeFileCommand.NotifyCanExecuteChanged(); // генератор не видит SelectedFaceIndex как зависимость
         }
@@ -326,36 +328,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// Сбрасывает выбор (play, перемотка, новый файл).
     private void ClearFaceSelection()
     {
-        if (_selectedFace != null)
-        {
-            _selectedFace.Dispose();
-            _selectedFace = null;
-        }
+        _selectedFace = null;
 
         if (SelectedFaceIndex != -1)
         {
             SelectedFaceIndex = -1;
             AnalyzeFileCommand.NotifyCanExecuteChanged(); // генератор не видит SelectedFaceIndex как зависимость
         }
-    }
-
-    /// Вырезает лицо с margin, ограничивая рамками кадра. Возвращает копию (Clone).
-    private static Mat CropFaceWithMargin(Mat frame, OpenCvSharp.Rect box)
-    {
-        int marginX = (int)(box.Width * FaceCropMargin);
-        int marginY = (int)(box.Height * FaceCropMargin);
-
-        int x = Math.Max(0, box.X - marginX);
-        int y = Math.Max(0, box.Y - marginY);
-        int right = Math.Min(frame.Width, box.X + box.Width + marginX);
-        int bottom = Math.Min(frame.Height, box.Y + box.Height + marginY);
-
-        int w = right - x;
-        int h = bottom - y;
-        if (w <= 0 || h <= 0)
-            return new Mat();
-
-        return new Mat(frame, new OpenCvSharp.Rect(x, y, w, h)).Clone();
     }
 
     #endregion
@@ -371,11 +350,31 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var progressDialog = new ProgressDialog("Анализ видео", "Получение ключевых кадров...");
+        var service = _faceService;
+        var reference = _selectedFace?.Embedding;
+        var videoInfo = _mediaPlayerService.VideoInfo;
+        if (service == null || reference == null || videoInfo == null)
+            return;
+
+        var progressDialog = new ProgressDialog("Анализ видео", "Поиск лица по ключевым кадрам...");
         progressDialog.Owner = Application.Current.MainWindow;
         progressDialog.Show();
 
-        KeyframeList = await Task.Run(() => FFmpegService.GetVideoKeyframes(FilePath));
+        int w = videoInfo.Width, h = videoInfo.Height;
+
+        KeyframeList = await Task.Run(() =>
+        {
+            var keyframes = FFmpegService.GetVideoKeyframes(FilePath);
+            foreach (var kf in keyframes)
+            {
+                using var frame = FFmpegService.ExtractFrame(FilePath, (long)kf.Timestamp, w, h);
+                kf.IsSelected = service.Detect(frame).Any(f =>
+                    f.Landmarks != null &&
+                    service.GenerateReferenceEmbedding(frame, f.BoxPx, f.Landmarks).Dot(reference) >= 0.42);
+            }
+
+            return keyframes;
+        });
 
         IsKeyframePanelExpanded = true;
 
@@ -407,7 +406,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             _mediaPlayerService.SeekCompleted -= OnSeekCompleted;
 
             _mediaPlayerService.Dispose();
-            _faceDetector?.Dispose();
+            _faceService?.Dispose();
         }
 
         _disposed = true;

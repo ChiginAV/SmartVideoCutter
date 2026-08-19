@@ -36,8 +36,6 @@ public static class SettingsManager
             // через сеттеры ObservableObject сработает PropertyChanged.
             Settings? loaded = JsonSerializer.Deserialize<Settings>(json, JsonOptions);
 
-            CurrentSettings.YoloPath = loaded?.YoloPath ?? string.Empty;
-            CurrentSettings.ArcFacePath = loaded?.ArcFacePath ?? string.Empty;
             CurrentSettings.FfmpegPath = loaded?.FfmpegPath ?? string.Empty;
             CurrentSettings.ThemeMode = loaded?.ThemeMode ?? AppThemeMode.Dark;
         }
@@ -46,7 +44,6 @@ public static class SettingsManager
             // повреждённый файл — оставляем дефолтные значения
         }
     }
-
 
     public static void Save()
     {

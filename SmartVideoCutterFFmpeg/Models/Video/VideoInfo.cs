@@ -1,4 +1,4 @@
-﻿namespace SmartVideoCutterFFmpeg.Models;
+﻿namespace SmartVideoCutterFFmpeg.Models.Video;
 
 public class VideoInfo
 {

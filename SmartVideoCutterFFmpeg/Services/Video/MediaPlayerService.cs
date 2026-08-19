@@ -10,7 +10,7 @@ using FFMediaToolkit.Decoding;
 using FFMediaToolkit.Graphics;
 using OpenCvSharp;
 
-namespace SmartVideoCutterFFmpeg.Services;
+namespace SmartVideoCutterFFmpeg.Services.Video;
 
 /// <summary>
 /// Состояние плеера (аналог Flyleaf Player.Status).

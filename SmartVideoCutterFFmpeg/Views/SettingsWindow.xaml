@@ -17,8 +17,6 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <Grid.ColumnDefinitions>
@@ -27,61 +25,19 @@
             <ColumnDefinition Width="100" />
         </Grid.ColumnDefinitions>
 
-        <!--  yolo  -->
-
-        <TextBlock
-            Margin="5"
-            Padding="5"
-            VerticalAlignment="Center"
-            Text="Файл yolo:" />
-        <TextBox
-            Grid.Column="1"
-            Margin="5"
-            Padding="5"
-            Text="{Binding Settings.YoloPath}" />
-        <Button
-            Grid.Column="2"
-            Margin="5"
-            Command="{Binding BrowseYoloFileCommand}"
-            Content="Выбрать" />
-
-        <!--  arcface  -->
-
-        <TextBlock
-            Grid.Row="1"
-            Margin="5"
-            Padding="5"
-            VerticalAlignment="Center"
-            Text="Файл arcface:" />
-        <TextBox
-            Grid.Row="1"
-            Grid.Column="1"
-            Margin="5"
-            Padding="5"
-            Text="{Binding Settings.ArcFacePath}" />
-        <Button
-            Grid.Row="1"
-            Grid.Column="2"
-            Margin="5"
-            Command="{Binding BrowseArcFaceFileCommand}"
-            Content="Выбрать" />
-
         <!--  ffmpeg  -->
 
         <TextBlock
-            Grid.Row="2"
             Margin="5"
             Padding="5"
             VerticalAlignment="Center"
             Text="Папка ffmpeg:" />
         <TextBox
-            Grid.Row="2"
             Grid.Column="1"
             Margin="5"
             Padding="5"
             Text="{Binding Settings.FfmpegPath}" />
         <Button
-            Grid.Row="2"
             Grid.Column="2"
             Margin="5"
             Command="{Binding BrowseFfmpegFolderCommand}"
@@ -90,7 +46,7 @@
         <!--  Статус валидации  -->
 
         <TextBlock
-            Grid.Row="3"
+            Grid.Row="1"
             Grid.ColumnSpan="3"
             Margin="5"
             Foreground="Red"
@@ -100,7 +56,7 @@
         <!--  Save  -->
 
         <Button
-            Grid.Row="4"
+            Grid.Row="2"
             Grid.Column="1"
             Margin="5"
             Padding="5"
