@@ -1,0 +1,9 @@
+﻿global using SmartVideoCutter.Models;
+global using SmartVideoCutter.Models.ComputerVision;
+global using SmartVideoCutter.Models.Video;
+global using SmartVideoCutter.Services;
+global using SmartVideoCutter.Services.ComputerVision;
+global using SmartVideoCutter.Services.Video;
+global using SmartVideoCutter.ViewModels;
+global using SmartVideoCutter.Views;
+global using System.Diagnostics;

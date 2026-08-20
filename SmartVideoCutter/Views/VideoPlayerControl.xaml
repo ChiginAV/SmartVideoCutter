@@ -1,0 +1,187 @@
+﻿<UserControl
+    x:Class="SmartVideoCutter.Views.VideoPlayerControl"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:converters="clr-namespace:SmartVideoCutter.Converters"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    d:DesignHeight="480"
+    d:DesignWidth="800"
+    mc:Ignorable="d">
+    <UserControl.Resources>
+        <converters:MultiplyConverter x:Key="MultiplyConverter" />
+        <converters:FaceBoxBrushConverter x:Key="FaceBoxBrushConverter" />
+        <converters:FaceBoxThicknessConverter x:Key="FaceBoxThicknessConverter" />
+
+        <!--
+            Заполнение внутренности рамки лица: alpha=1 (визуально невидимо).
+            С alpha=0 клики в прозрачной области проходят сквозь рамку;
+            с alpha=1 внутренность рамки кликабельна.
+        -->
+        <SolidColorBrush x:Key="FaceBoxFillBrush" Color="#01000000" />
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <!--  кадр  -->
+            <RowDefinition Height="*" />
+            <!--  панель управления  -->
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!--  Кадр (BitmapSource) + оверлей рамок лиц  -->
+        <Border Grid.Row="0">
+            <Grid x:Name="VideoGrid">
+                <Image x:Name="VideoImage"
+                    Source="{Binding VideoFrame}"
+                    Stretch="Uniform" />
+
+                <!--
+                    Рамки лиц: ItemsControl на Canvas-панели; размер (letterbox)
+                    задаёт code-behind (UpdateOverlaySize)
+                -->
+                <ItemsControl x:Name="FaceOverlay"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    IsHitTestVisible="True"
+                    ItemsSource="{Binding FaceBoxes}">
+                    <!--
+                        Шаблон без ScrollViewer: по умолчанию ItemsControl оборачивает
+                        Canvas в ScrollViewer, который перехватывает мышь и блокирует
+                        клики по рамкам. Оставляем только ItemsPresenter (чистый Canvas).
+                        Border без Background не перехватывает клики, ClipToBounds
+                        не даёт рамкам выходить за область кадра.
+                    -->
+                    <ItemsControl.Template>
+                        <ControlTemplate TargetType="ItemsControl">
+                            <Border ClipToBounds="True">
+                                <ItemsPresenter />
+                            </Border>
+                        </ControlTemplate>
+                    </ItemsControl.Template>
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <Canvas />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <!--
+                        Позиция и размер — на контейнере (ContentPresenter): Canvas
+                        раскладывает только своих прямых детей, а это контейнеры,
+                        а не Rectangle из DataTemplate.
+                    -->
+                    <ItemsControl.ItemContainerStyle>
+                        <Style TargetType="ContentPresenter">
+                            <Setter Property="Canvas.Left">
+                                <Setter.Value>
+                                    <MultiBinding Converter="{StaticResource MultiplyConverter}">
+                                        <Binding Path="X" />
+                                        <Binding Path="Width" RelativeSource="{RelativeSource AncestorType=ItemsControl}" />
+                                    </MultiBinding>
+                                </Setter.Value>
+                            </Setter>
+                            <Setter Property="Canvas.Top">
+                                <Setter.Value>
+                                    <MultiBinding Converter="{StaticResource MultiplyConverter}">
+                                        <Binding Path="Y" />
+                                        <Binding Path="Height" RelativeSource="{RelativeSource AncestorType=ItemsControl}" />
+                                    </MultiBinding>
+                                </Setter.Value>
+                            </Setter>
+                            <Setter Property="Width">
+                                <Setter.Value>
+                                    <MultiBinding Converter="{StaticResource MultiplyConverter}">
+                                        <Binding Path="W" />
+                                        <Binding Path="Width" RelativeSource="{RelativeSource AncestorType=ItemsControl}" />
+                                    </MultiBinding>
+                                </Setter.Value>
+                            </Setter>
+                            <Setter Property="Height">
+                                <Setter.Value>
+                                    <MultiBinding Converter="{StaticResource MultiplyConverter}">
+                                        <Binding Path="H" />
+                                        <Binding Path="Height" RelativeSource="{RelativeSource AncestorType=ItemsControl}" />
+                                    </MultiBinding>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </ItemsControl.ItemContainerStyle>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <!--
+                                Rectangle растягивается на весь контейнер (Stretch=Fill).
+                                Клик по рамке обрабатывается в code-behind (OnFaceOverlayMouseUp):
+                                RelativeSource-биндинг команды в behavior внутри DataTemplate
+                                не разрешается (behavior прикрепляется до подключения элемента
+                                к дереву и не переоценивает биндинг).
+                            -->
+                            <Rectangle Fill="{StaticResource FaceBoxFillBrush}" IsHitTestVisible="True">
+                                <!--
+                                    SelectedFaceIndex живёт на PlayerViewModel (DataContext оверлея),
+                                    а не на ItemsControl. RelativeSource оценивает Path прямо на
+                                    предке, поэтому нужен явный сегмент "DataContext.", иначе биндинг
+                                    тихо падает и рамка никогда не краснеет.
+                                -->
+                                <Rectangle.Stroke>
+                                    <MultiBinding Converter="{StaticResource FaceBoxBrushConverter}">
+                                        <Binding Path="Index" />
+                                        <Binding Path="DataContext.SelectedFaceIndex" RelativeSource="{RelativeSource AncestorType=ItemsControl}" />
+                                    </MultiBinding>
+                                </Rectangle.Stroke>
+                                <Rectangle.StrokeThickness>
+                                    <MultiBinding Converter="{StaticResource FaceBoxThicknessConverter}">
+                                        <Binding Path="Index" />
+                                        <Binding Path="DataContext.SelectedFaceIndex" RelativeSource="{RelativeSource AncestorType=ItemsControl}" />
+                                    </MultiBinding>
+                                </Rectangle.StrokeThickness>
+                            </Rectangle>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </Grid>
+        </Border>
+
+        <!--  Панель управления: Play/Pause, время, слайдер перемотки, длительность  -->
+        <Grid Grid.Row="1" Margin="5">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <Button x:Name="PlayPauseButton"
+                Grid.Column="0"
+                Margin="0,0,8,0"
+                Command="{Binding PlayPauseCommand}"
+                Content="Play / Pause" />
+
+            <TextBlock
+                Grid.Column="1"
+                Margin="0,0,8,0"
+                VerticalAlignment="Center"
+                Text="{Binding PositionMs, Converter={StaticResource MsToTimeConverter}}" />
+
+            <!--
+                TwoWay + PropertyChanged: пока пользователь перетаскивает бегунок,
+                слайдер пишет PositionMs напрямую (источник правды). VM игнорирует
+                CurTime-обновления, пока IsDragging (см. PlayerViewModel).
+                Пауза/возобновление/перемотка — команды StartDragging/EndDragging.
+            -->
+            <Slider x:Name="PositionSlider"
+                Grid.Column="2"
+                VerticalAlignment="Center"
+                IsEnabled="{Binding IsMediaLoaded}"
+                LargeChange="5000"
+                Maximum="{Binding DurationMs}"
+                SmallChange="100"
+                Value="{Binding PositionMs, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+
+
+            <TextBlock
+                Grid.Column="3"
+                Margin="8,0,0,0"
+                VerticalAlignment="Center"
+                Text="{Binding DurationMs, Converter={StaticResource MsToTimeConverter}}" />
+        </Grid>
+    </Grid>
+</UserControl>
