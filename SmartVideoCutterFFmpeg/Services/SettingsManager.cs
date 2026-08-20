@@ -39,6 +39,7 @@ public static class SettingsManager
 
             CurrentSettings.FfmpegPath = loaded?.FfmpegPath ?? string.Empty;
             CurrentSettings.ThemeMode = loaded?.ThemeMode ?? AppThemeMode.Dark;
+            CurrentSettings.AnalysisAlgorithm = loaded?.AnalysisAlgorithm ?? AppAnalysisAlgorithm.ThreePerSecond;
         }
         catch (JsonException)
         {

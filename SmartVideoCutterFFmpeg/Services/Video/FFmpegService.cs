@@ -133,8 +133,114 @@ public class FFmpegService
         return mat;
     }
 
+    /// Последовательное декодирование всех кадров отрезка [startMs, endMs) одним процессом ffmpeg.
+    /// -ss перед -i: быстрый seek к ключевому кадру не позже startMs; т.к. startMs — сам ключевой
+    /// кадр, перемотка точна, и кадры декодируются строго по порядку.
+    /// Вызывающий обязан Dispose() возвращаемые Mat. Ранний выход из цикла (Dispose итератора)
+    /// или отмена (ct) убивают процесс ffmpeg.
+    public static IEnumerable<Mat> ReadFrames(string videoPath, double startMs, double endMs,
+        int width, int height, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = Path.Combine(SettingsManager.CurrentSettings.FfmpegPath, "ffmpeg.exe"),
+            RedirectStandardOutput = true,
+            RedirectStandardError = true, // stderr → память (нет спама в консоли, deadlock исключён)
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        psi.ArgumentList.Add("-hide_banner");
+        psi.ArgumentList.Add("-loglevel");
+        psi.ArgumentList.Add("error"); // только ошибки
+        psi.ArgumentList.Add("-ss"); // быстрый seek: startMs — ключевой кадр, перемотка точная
+        psi.ArgumentList.Add((startMs / 1000.0).ToString(CultureInfo.InvariantCulture));
+        psi.ArgumentList.Add("-i");
+        psi.ArgumentList.Add(videoPath);
+        psi.ArgumentList.Add("-t");
+        psi.ArgumentList.Add(((endMs - startMs) / 1000.0).ToString(CultureInfo.InvariantCulture));
+        psi.ArgumentList.Add("-f");
+        psi.ArgumentList.Add("rawvideo");
+        psi.ArgumentList.Add("-pix_fmt");
+        psi.ArgumentList.Add("bgr24");
+        psi.ArgumentList.Add("pipe:1");
+
+        using var process = new Process { StartInfo = psi };
+        process.Start();
+        var stderr = AttachStderrCapture(process);
+        using var reg = ct.Register(() =>
+        {
+            try { process.Kill(true); } catch { /* процесс мог уже завершиться */ }
+        });
+
+        int size = width * height * 3;
+        var buffer = new byte[size];
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                int read = 0;
+                while (read < size)
+                {
+                    int n;
+                    try
+                    {
+                        n = process.StandardOutput.BaseStream.Read(buffer, read, size - read);
+                    }
+                    catch (IOException)
+                    {
+                        break; // процесс убит (отмена) — pipe разорван
+                    }
+                    if (n <= 0)
+                        break;
+                    read += n;
+                }
+                if (read < size)
+                    break; // конец потока
+
+                var mat = new Mat(height, width, MatType.CV_8UC3);
+                Marshal.Copy(buffer, 0, mat.Data, size);
+                yield return mat;
+            }
+        }
+        finally
+        {
+            // ранний выход (вызывающий dispose'нул итератор) или отмена — убиваем процесс
+            try
+            {
+                if (!process.HasExited)
+                    process.Kill(true);
+                process.WaitForExit(2000);
+            }
+            catch
+            {
+                /* процесс мог уже завершиться */
+            }
+        }
+    }
+
     /// Экспорт отрезков без перекодирования. ranges — [startMs, endMs), отсортированы, не пересекаются.
     /// Экспорт отрезков без перекодирования. ranges — [startMs, endMs), отсортированы, не пересекаются.
+    /// Отрезки для экспорта: от выбранного ключевого кадра до следующего ключевого
+    /// (или до конца видео). Соседние выбранные кадры сливаются в один непрерывный отрезок.
+    public static List<(double StartMs, double EndMs)> BuildSegments(IReadOnlyList<Keyframe> keyframes,
+        double durationMs)
+    {
+        var segments = new List<(double, double)>();
+        for (int i = 0; i < keyframes.Count; i++)
+        {
+            if (!keyframes[i].IsSelected)
+                continue;
+            int j = i;
+            while (j + 1 < keyframes.Count && keyframes[j + 1].IsSelected)
+                j++;
+            double end = (j + 1 < keyframes.Count) ? keyframes[j + 1].Timestamp : durationMs;
+            segments.Add((keyframes[i].Timestamp, end));
+            i = j;
+        }
+
+        return segments;
+    }
+
     public static void ExportSegments(string videoPath, string outputPath,
         IReadOnlyList<(double StartMs, double EndMs)> ranges, IProgress<int> progress, CancellationToken ct = default)
     {

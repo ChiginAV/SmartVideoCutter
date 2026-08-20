@@ -8,7 +8,6 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.Win32;
 using OpenCvSharp;
 using System.Windows.Media.Imaging;
-using FaceAiSharp.Extensions; // расширение Dot(float[], float[]) для порога «тот же человек»
 
 
 namespace SmartVideoCutterFFmpeg.ViewModels;
@@ -30,7 +29,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _isMediaLoaded; // файл загружен (слайдер активен)
 
     private readonly MediaPlayerService _mediaPlayerService;
-    private FaceAiSharpService? _faceService;
+    private FaceDetector? _faceDetector;
+    private FaceRecognizer? _faceRecognizer;
     private List<DetectedFace> _detectedFaces = new();
     private int _faceAnalysisSeq;
     private bool _disposed;
@@ -56,11 +56,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         try
         {
-            _faceService = new FaceAiSharpService();
+            _faceDetector = new FaceDetector();
+            _faceRecognizer = new FaceRecognizer(_faceDetector);
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Face detector init failed: {ex.Message}");
+            System.Diagnostics.Debug.WriteLine($"Face services init failed: {ex.Message}");
         }
     }
 
@@ -250,14 +251,14 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task AnalyzeFaces()
     {
-        var service = _faceService;
+        var detector = _faceDetector;
         var frame = _mediaPlayerService.GetCurrentFrame();
         int seq = ++_faceAnalysisSeq;
 
         if (frame == null)
             return;
 
-        if (service == null)
+        if (detector == null)
         {
             StatusMessage = "Не удалось инициализировать FaceAiSharp (проверьте папку onnx в bin)";
             return;
@@ -268,7 +269,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         List<DetectedFace> faces;
         try
         {
-            faces = await Task.Run(() => service.Detect(frame));
+            faces = await Task.Run(() => detector.Detect(frame));
         }
         catch (Exception ex)
         {
@@ -300,9 +301,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         if (index < 0 || index >= FaceBoxes.Count || index >= _detectedFaces.Count)
             return;
 
-        var service = _faceService;
+        var recognizer = _faceRecognizer;
         var face = _detectedFaces[index];
-        if (service == null || face.Landmarks == null)
+        if (recognizer == null || face.Landmarks == null)
             return;
 
         var frame = _mediaPlayerService.GetCurrentFrame();
@@ -314,7 +315,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             float[] embedding;
             try
             {
-                embedding = service.GenerateReferenceEmbedding(frame, face.BoxPx, face.Landmarks);
+                embedding = recognizer.GenerateReferenceEmbedding(frame, face.BoxPx, face.Landmarks);
             }
             catch (Exception ex)
             {
@@ -357,53 +358,47 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var service = _faceService;
+        var recognizer = _faceRecognizer;
         var reference = _selectedFace?.Embedding;
         var videoInfo = _mediaPlayerService.VideoInfo;
-        if (service == null || reference == null || videoInfo == null)
+        if (recognizer == null || reference == null || videoInfo == null)
             return;
 
         int w = videoInfo.Width, h = videoInfo.Height;
 
-        // 1. Список ключевых кадров (ffprobe, быстро) — чтобы знать общее число
+        // 1. Список ключевых кадров (ffprobe, быстро) — границы отрезков
         var keyframes = await Task.Run(() => FFmpegService.GetVideoKeyframes(FilePath));
         if (keyframes.Count == 0)
             return;
 
+        double durationMs = _mediaPlayerService.DurationMs;
+
         // 2. Окно с детерминированным прогрессом: maximum = число ключевых кадров
-        var progressDialog = new ProgressDialog("Анализ видео", "Поиск лица по ключевым кадрам...",
+        var progressDialog = new ProgressDialog("Анализ видео", "Поиск лица по кадрам...",
             indeterminate: false, maximum: keyframes.Count);
         progressDialog.Owner = Application.Current.MainWindow;
         progressDialog.Show();
         var ct = progressDialog.Cts.Token;
 
-        // 3. Детекция + embedding по каждому кадру, прогресс после каждого.
-        // Отмена: выходим до следующей итерации (текущий ExtractFrame/Detect доделается — это быстро).
-        List<Keyframe> result = keyframes; // на ошибке ниже return до использования
+        // 3. Анализ кадров каждого отрезка [keyframe[i], keyframe[i+1]) — алгоритм из настроек.
+        //    Логика в FaceRecognizer: нашли человека — отрезок принят, остальные кадры
+        //    пропускаем (ранний выход). Отмена: выходим до следующей итерации.
         Exception? error = null;
         try
         {
-            result = await Task.Run(() =>
-            {
-                for (int i = 0; i < keyframes.Count; i++)
+            await Task.Run(() => recognizer.Analyze(
+                FilePath, keyframes, durationMs, w, h, videoInfo.Fps, reference,
+                SettingsManager.CurrentSettings.AnalysisAlgorithm,
+                i =>
                 {
-                    if (ct.IsCancellationRequested)
-                        break;
-                    var kf = keyframes[i];
-                    using var frame = FFmpegService.ExtractFrame(FilePath, (long)kf.Timestamp, w, h);
-                    kf.IsSelected = service.Detect(frame).Any(f =>
-                        f.Landmarks != null &&
-                        service.GenerateReferenceEmbedding(frame, f.BoxPx, f.Landmarks).Dot(reference) >= 0.42);
-                    progressDialog.UpdateProgress(i + 1);
-                    progressDialog.UpdateMessage($"Поиск лица по ключевым кадрам... ({i + 1}/{keyframes.Count})");
-                }
-
-                return keyframes;
-            });
+                    progressDialog.UpdateProgress(i);
+                    progressDialog.UpdateMessage($"Поиск лица по кадрам... ({i}/{keyframes.Count})");
+                },
+                ct));
         }
         catch (Exception ex)
         {
-            // без catch исключение из ExtractFrame в async void методе = краш всего приложения
+            // без catch исключение из ReadFrames в async void методе = краш всего приложения
             error = ex;
             System.Diagnostics.Debug.WriteLine($"Analyze failed: {ex}");
         }
@@ -427,7 +422,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        KeyframeList = result;
+        KeyframeList = keyframes;
         IsKeyframePanelExpanded = true;
 
         _isAnalyzed = true;
@@ -436,7 +431,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
         ExportFileCommand.NotifyCanExecuteChanged();
         StatusMessage = $"Анализ завершён: {KeyframeList.Count(k => k.IsSelected)}/{KeyframeList.Count} ключевых кадров с лицом";
     }
-
 
     private bool CanAnalyzeFile() => SelectedFaceIndex >= 0;
 
@@ -447,7 +441,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand(CanExecute = nameof(CanExportFile))]
     private async void ExportFile()
     {
-        var segments = BuildSegments(KeyframeList, _mediaPlayerService.DurationMs);
+        var segments = FFmpegService.BuildSegments(KeyframeList, _mediaPlayerService.DurationMs);
         if (segments.Count == 0)
         {
             StatusMessage = "Нет выбранных ключевых кадров";
@@ -504,27 +498,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private bool CanExportFile() => _isAnalyzed && KeyframeList.Any(k => k.IsSelected);
 
-    /// Отрезки: от выбранного ключевого кадра до следующего ключевого (или до конца видео).
-    /// Соседние выбранные кадры сливаются в один непрерывный отрезок.
-    private static List<(double StartMs, double EndMs)> BuildSegments(IReadOnlyList<Keyframe> keyframes,
-        double durationMs)
-    {
-        var segments = new List<(double, double)>();
-        for (int i = 0; i < keyframes.Count; i++)
-        {
-            if (!keyframes[i].IsSelected)
-                continue;
-            int j = i;
-            while (j + 1 < keyframes.Count && keyframes[j + 1].IsSelected)
-                j++;
-            double end = (j + 1 < keyframes.Count) ? keyframes[j + 1].Timestamp : durationMs;
-            segments.Add((keyframes[i].Timestamp, end));
-            i = j;
-        }
-
-        return segments;
-    }
-
     /// Имя = оригинал + суффикс; при коллизии — «имя (1).ext», «имя (2).ext», … (конвенция Windows).
     private static string GetUniqueFileName(string originalPath, string suffix)
     {
@@ -561,7 +534,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
             _mediaPlayerService.SeekCompleted -= OnSeekCompleted;
 
             _mediaPlayerService.Dispose();
-            _faceService?.Dispose();
+            _faceDetector?.Dispose();
+            _faceRecognizer?.Dispose();
         }
 
         _disposed = true;

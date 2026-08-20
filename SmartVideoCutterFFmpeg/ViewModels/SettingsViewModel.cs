@@ -26,6 +26,9 @@ public partial class SettingsViewModel : ObservableObject
     /// Значения для ComboBox выбора темы.
     public AppThemeMode[] ThemeModes => Enum.GetValues<AppThemeMode>();
 
+    /// Значения для ComboBox выбора алгоритма анализа.
+    public AppAnalysisAlgorithm[] AnalysisAlgorithms => Enum.GetValues<AppAnalysisAlgorithm>();
+
     [RelayCommand(CanExecute = nameof(CanSave))]
     private void Save()
     {

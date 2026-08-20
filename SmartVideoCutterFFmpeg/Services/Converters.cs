@@ -27,4 +27,21 @@ public class MillisecondsToTimeConverter : IValueConverter
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         => throw new NotSupportedException(); // колонка read-only, обратное преобразование не нужно
+ }
+
+/// <summary>
+/// Отображение алгоритма анализа: enum → человекочитаемое имя для ComboBox.
+/// </summary>
+public class AnalysisAlgorithmDisplayNameConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value switch
+        {
+            AppAnalysisAlgorithm.ThreePerSecond => "Точный (3 раза в секунду)",
+            AppAnalysisAlgorithm.ThreeBetweenKeyframes => "Быстрый (3 раза между ключевыми кадрами)",
+            _ => value?.ToString() ?? string.Empty
+        };
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException(); // ComboBox выбирает по объекту, обратное преобразование не нужно
 }
