@@ -23,6 +23,9 @@ public partial class SettingsViewModel : ObservableObject
     /// Экземпляр настроек для привязки в XAML: Settings.FfmpegPath и т.д.
     public Settings Settings => _settings;
 
+    /// Значения для ComboBox выбора темы.
+    public AppThemeMode[] ThemeModes => Enum.GetValues<AppThemeMode>();
+
     [RelayCommand(CanExecute = nameof(CanSave))]
     private void Save()
     {

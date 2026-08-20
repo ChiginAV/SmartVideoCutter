@@ -1,4 +1,4 @@
-﻿namespace SmartVideoCutterFlyleaf.Tests;
+﻿namespace SmartVideoCutterFFmpeg.Tests;
 
 public class UnitTest1
 {

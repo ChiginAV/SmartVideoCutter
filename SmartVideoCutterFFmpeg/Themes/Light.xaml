@@ -12,5 +12,8 @@
     <SolidColorBrush x:Key="AccentBrush" Color="#0067C0" />
     <SolidColorBrush x:Key="AccentHoverBrush" Color="#005A9E" />
     <SolidColorBrush x:Key="SelectionBrush" Color="#DCEBFA" />
+    <SolidColorBrush x:Key="DataGridHeaderBackgroundBrush" Color="#F0F0F0" />
+    <SolidColorBrush x:Key="DangerBrush" Color="#C42B1C" />
+    <SolidColorBrush x:Key="TransparentBrush" Color="Transparent" />
 
 </ResourceDictionary>

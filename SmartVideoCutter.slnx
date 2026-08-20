@@ -1,6 +1,5 @@
 <Solution>
   <Project Path="SmartVideoCutter/SmartVideoCutter.csproj" />
+  <Project Path="SmartVideoCutterFFmpeg.Tests/SmartVideoCutterFFmpeg.Tests.csproj" />
   <Project Path="SmartVideoCutterFFmpeg/SmartVideoCutterFFmpeg.csproj" />
-  <Project Path="SmartVideoCutterFlyleaf.Tests/SmartVideoCutterFlyleaf.Tests.csproj" />
-  <Project Path="SmartVideoCutterFlyleaf/SmartVideoCutterFlyleaf.csproj" />
 </Solution>

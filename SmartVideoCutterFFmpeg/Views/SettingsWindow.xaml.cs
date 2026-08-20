@@ -10,6 +10,8 @@ public partial class SettingsWindow : Window
     {
         InitializeComponent();
 
+        ThemeHelper.Attach(this); // заголовок окна следует за темой
+
         _viewModel = new SettingsViewModel();
         _viewModel.CloseRequested += (s, e) => Close();
         DataContext = _viewModel;

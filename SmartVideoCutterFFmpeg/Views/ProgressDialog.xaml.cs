@@ -12,6 +12,8 @@ public partial class ProgressDialog : Window
     {
         InitializeComponent();
 
+        ThemeHelper.Attach(this); // заголовок окна следует за темой
+
         Title = title;
         MessageTextBlock.Text = message;
 

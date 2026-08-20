@@ -6,6 +6,8 @@
     xmlns:local="clr-namespace:SmartVideoCutterFFmpeg.Views"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     Title="ProgressDialog"
+    Background="{DynamicResource WindowBackgroundBrush}"
+    Foreground="{DynamicResource TextBrush}"
     ResizeMode="NoResize"
     SizeToContent="WidthAndHeight"
     WindowStartupLocation="CenterOwner">
@@ -18,7 +20,6 @@
             Height="20"
             IsIndeterminate="True" />
         <Button x:Name="CancelButton"
-            Width="90"
             Margin="0,12,0,0"
             HorizontalAlignment="Right"
             Content="Отмена"

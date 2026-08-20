@@ -39,12 +39,6 @@ ArcFace (InsightFace):
 - https://github.com/deepinsight/insightface/blob/master/detection/README.md
 - https://github.com/deepinsight/insightface/blob/master/recognition/README.md
 
-Flyleaf:
-
-- https://github.com/SuRGeoNix/Flyleaf
-- https://github.com/SuRGeoNix/Flyleaf/wiki
-- https://github.com/SuRGeoNix/Flyleaf/tree/master/Samples
-
 ---
 
 # Terms
