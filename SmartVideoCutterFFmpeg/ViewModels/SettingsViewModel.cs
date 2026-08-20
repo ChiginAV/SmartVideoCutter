@@ -1,21 +1,22 @@
 ﻿using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using Microsoft.Win32;
 
 namespace SmartVideoCutterFFmpeg.ViewModels;
 
 public partial class SettingsViewModel : ObservableObject
 {
     private readonly Settings _settings;
+    private readonly DialogService _dialogs;
     [ObservableProperty] private bool _hasErrors;
     [ObservableProperty] private string _statusMessage = string.Empty;
 
     /// Окно должно закрыться (поднимается после успешного сохранения).
     public event EventHandler? CloseRequested;
 
-    public SettingsViewModel(Settings? settings = null)
+    public SettingsViewModel(DialogService dialogs, Settings? settings = null)
     {
+        _dialogs = dialogs;
         _settings = settings ?? SettingsManager.CurrentSettings;
         _settings.PropertyChanged += (s, e) => { Validate(); };
     }
@@ -43,9 +44,9 @@ public partial class SettingsViewModel : ObservableObject
     [RelayCommand]
     private void BrowseFfmpegFolder()
     {
-        var dialog = new OpenFolderDialog();
-        if (dialog.ShowDialog() == true)
-            _settings.FfmpegPath = dialog.FolderName;
+        var folder = _dialogs.OpenFolder();
+        if (folder != null)
+            _settings.FfmpegPath = folder;
     }
 
     private void Validate()

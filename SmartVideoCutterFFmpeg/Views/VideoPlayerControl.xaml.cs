@@ -1,35 +1,22 @@
 ﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
-using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Shapes;
-
 
 namespace SmartVideoCutterFFmpeg.Views;
 
 /// <summary>
-/// Контрол видео-плеера: кадр (BitmapSource) + оверлей рамок лиц + панель управления.
-/// DataContext ожидается MainViewModel.
+/// Контрол видео-плеера: кадр + оверлей рамок лиц + панель управления.
+/// DataContext ожидается PlayerViewModel (устанавливается в MainWindow.xaml).
+/// Рамки лиц — XAML (ItemsControl + DataTemplate); здесь только letterbox-размер
+/// оверлея и подавление клика по треку слайдера (перемотка — только бегунком).
+/// Состояние перетаскивания (IsDragging) и пауза/перемотка — в PlayerViewModel.
 /// </summary>
 public partial class VideoPlayerControl : UserControl
 {
     private double _videoAspect;
     private bool _sliderPressed;
-    private bool _wasPlaying; // видео играло в момент нажатия на слайдер
-
-    // Заполнение внутренности рамки лица: alpha=1 (визуально невидимо).
-    // С alpha=0 клики в прозрачной области проходят сквозь рамку;
-    // с alpha=1 внутренность рамки кликабельна.
-    private static readonly SolidColorBrush FaceBoxFill = CreateFaceBoxFill();
-
-    private static SolidColorBrush CreateFaceBoxFill()
-    {
-        var brush = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0));
-        brush.Freeze();
-        return brush;
-    }
 
     public VideoPlayerControl()
     {
@@ -40,7 +27,26 @@ public partial class VideoPlayerControl : UserControl
         PositionSlider.PreviewMouseLeftButtonDown += OnSliderMouseDown;
         PositionSlider.PreviewMouseLeftButtonUp += OnSliderMouseUp;
 
+        // Клик по рамке лица: событие пузырится из Rectangle (DataTemplate)
+        // на ItemsControl. RelativeSource-биндинг команды в behavior внутри
+        // DataTemplate не разрешается, поэтому вызов команды здесь.
+        FaceOverlay.MouseLeftButtonUp += OnFaceOverlayMouseUp;
+
         Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
+    }
+
+    /// <summary>Клик по рамке лица → SelectFaceCommand (индекс берём из FaceBox).</summary>
+    private void OnFaceOverlayMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is not System.Windows.Shapes.Rectangle rect)
+            return; // клик мимо рамок (в пустую область оверлея)
+
+        if (rect.DataContext is not FaceBox box)
+            return;
+
+        if (DataContext is PlayerViewModel vm)
+            vm.SelectFaceCommand.Execute(box.Index);
     }
 
     private void OnSliderMouseDown(object sender, MouseButtonEventArgs e)
@@ -56,19 +62,10 @@ public partial class VideoPlayerControl : UserControl
 
         _sliderPressed = true;
 
-        // Снимаем OneWay-биндинг Value←PositionMs: queued-обновление CurTime
-        // из decode-потока (закэшированное до паузы) не должно возвращать
-        // бегунок в позицию воспроизведения.
-        BindingOperations.ClearBinding(PositionSlider, Slider.ValueProperty);
-
-        // Пауза: PositionMs перестаёт обновляться, биндинг (даже queued)
-        // не затрёт значение, которое двигает пользователь.
-        if (DataContext is MainViewModel vm)
-        {
-            _wasPlaying = vm.IsPlaying;
-            if (_wasPlaying)
-                vm.Pause();
-        }
+        // Пауза + захват PositionMs — в VM (TwoWay-биндинг слайдера пишет
+        // значение напрямую; CurTime-обновления игнорируются, пока IsDragging).
+        if (DataContext is PlayerViewModel vm)
+            vm.StartDraggingCommand.Execute(null);
     }
 
     private void OnSliderMouseUp(object sender, MouseButtonEventArgs e)
@@ -77,22 +74,9 @@ public partial class VideoPlayerControl : UserControl
             return;
         _sliderPressed = false;
 
-        if (DataContext is not MainViewModel vm)
-            return;
-
-        int target = (int)PositionSlider.Value;
-        vm.SeekToPosition(target);
-        if (_wasPlaying)
-            vm.Play();
-        _wasPlaying = false;
-
-        // Переподключаем биндинг: SeekTo синхронно обновил PositionMs до новой
-        // позиции, поэтому бегунок останется на месте и снова будет следовать
-        // за воспроизведением.
-        PositionSlider.SetBinding(Slider.ValueProperty, new Binding(nameof(MainViewModel.PositionMs))
-        {
-            Mode = BindingMode.OneWay
-        });
+        // Перемотка на позицию бегунка + возобновление — в VM.
+        if (DataContext is PlayerViewModel vm)
+            vm.EndDraggingCommand.Execute(null);
     }
 
     /// <summary>Ищет Thumb внутри шаблона Slider (не зависит от имени в шаблоне).</summary>
@@ -118,73 +102,32 @@ public partial class VideoPlayerControl : UserControl
         if (System.ComponentModel.DesignerProperties.GetIsInDesignMode(this))
             return;
 
-        VideoGrid.SizeChanged += (_, e) =>
-        {
-            UpdateOverlaySize(e.NewSize);
-            DrawFaceBoxes();
-        };
+        VideoGrid.SizeChanged += OnVideoGridSizeChanged;
 
-        if (DataContext is MainViewModel vm)
+        // Aspect меняется при детекции лиц — пересчитываем letterbox-размер оверлея
+        if (DataContext is PlayerViewModel vm)
             vm.PropertyChanged += OnViewModelPropertyChanged;
     }
 
-    private void OnViewModelPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    private void OnUnloaded(object sender, RoutedEventArgs e)
     {
-        if (e.PropertyName == nameof(MainViewModel.FaceBoxes)
-            || e.PropertyName == nameof(MainViewModel.VideoAspect)
-            || e.PropertyName == nameof(MainViewModel.SelectedFaceIndex))
-        {
-            UpdateOverlaySize(new Size(VideoGrid.ActualWidth, VideoGrid.ActualHeight));
-            DrawFaceBoxes();
-        }
+        VideoGrid.SizeChanged -= OnVideoGridSizeChanged;
+        if (DataContext is PlayerViewModel vm)
+            vm.PropertyChanged -= OnViewModelPropertyChanged;
     }
 
-    private void DrawFaceBoxes()
+    private void OnVideoGridSizeChanged(object? sender, SizeChangedEventArgs e)
+        => UpdateOverlaySize(e.NewSize);
+
+    private void OnViewModelPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
-        if (DataContext is not MainViewModel vm)
-            return;
-
-        FaceOverlay.Children.Clear();
-
-        // UpdateOverlaySize задаёт Width/Height синхронно, а ActualWidth/ActualHeight
-        // обновляются только после следующего layout-прохода — поэтому читаем явные значения
-        double w = FaceOverlay.Width, h = FaceOverlay.Height;
-        if (double.IsNaN(w) || double.IsNaN(h))
-        {
-            w = FaceOverlay.ActualWidth;
-            h = FaceOverlay.ActualHeight;
-        }
-
-        if (w <= 0 || h <= 0)
-            return;
-
-        for (int i = 0; i < vm.FaceBoxes.Count; i++)
-        {
-            var box = vm.FaceBoxes[i];
-            bool isSelected = i == vm.SelectedFaceIndex;
-
-            var rect = new Rectangle
-            {
-                Stroke = new SolidColorBrush(isSelected ? Colors.Red : Colors.LimeGreen),
-                StrokeThickness = isSelected ? 3 : 2,
-                Fill = FaceBoxFill, // внутренность рамки кликабельна (см. комментарий у поля)
-                IsHitTestVisible = true,
-                Width = box.W * w,
-                Height = box.H * h
-            };
-            Canvas.SetLeft(rect, box.X * w);
-            Canvas.SetTop(rect, box.Y * h);
-
-            int capturedIndex = i;
-            rect.MouseLeftButtonUp += (_, _) => vm.SelectFace(capturedIndex);
-
-            FaceOverlay.Children.Add(rect);
-        }
+        if (e.PropertyName == nameof(PlayerViewModel.VideoAspect))
+            UpdateOverlaySize(new Size(VideoGrid.ActualWidth, VideoGrid.ActualHeight));
     }
 
     private void UpdateOverlaySize(Size ctrlSize)
     {
-        if (DataContext is MainViewModel vm)
+        if (DataContext is PlayerViewModel vm)
             _videoAspect = vm.VideoAspect;
 
         if (_videoAspect <= 0 || ctrlSize.Width <= 0 || ctrlSize.Height <= 0)
@@ -207,6 +150,6 @@ public partial class VideoPlayerControl : UserControl
         }
 
         FaceOverlay.Width = w;
-        FaceOverlay.Height = h; // Grid сам выровняет Canvas по центру
+        FaceOverlay.Height = h; // Grid сам выровняет оверлей по центру
     }
 }

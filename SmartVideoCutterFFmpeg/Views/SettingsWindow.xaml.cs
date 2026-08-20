@@ -12,7 +12,7 @@ public partial class SettingsWindow : Window
 
         ThemeHelper.Attach(this); // заголовок окна следует за темой
 
-        _viewModel = new SettingsViewModel();
+        _viewModel = new SettingsViewModel(new DialogService());
         _viewModel.CloseRequested += (s, e) => Close();
         DataContext = _viewModel;
     }

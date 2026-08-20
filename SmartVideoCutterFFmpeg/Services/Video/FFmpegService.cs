@@ -289,6 +289,22 @@ public class FFmpegService
         }
     }
 
+    /// <summary>
+    /// Имя = оригинал + суффикс; при коллизии — «имя (1).ext», «имя (2).ext», … (конвенция Windows).
+    /// </summary>
+    public static string GetUniqueFileName(string originalPath, string suffix)
+    {
+        string dir = Path.GetDirectoryName(originalPath) ?? ".";
+        string name = Path.GetFileNameWithoutExtension(originalPath) + suffix;
+        string ext = Path.GetExtension(originalPath);
+
+        string candidate = Path.Combine(dir, name + ext);
+        int n = 1;
+        while (File.Exists(candidate))
+            candidate = Path.Combine(dir, $"{name} ({n++}){ext}");
+        return candidate;
+    }
+
     /// Один отрезок [startMs, endMs) без перекодирования.
     /// -ss перед -i + -c copy: ffmpeg перемотает ровно на ключевой кадр — наши границы и есть ключевые кадры.
     private static void CopyRange(string videoPath, string outputPath, double startMs, double endMs, CancellationToken ct)

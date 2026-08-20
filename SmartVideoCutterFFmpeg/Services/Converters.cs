@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Media;
 
 namespace SmartVideoCutterFFmpeg.Converters;
 
@@ -44,4 +45,72 @@ public class AnalysisAlgorithmDisplayNameConverter : IValueConverter
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         => throw new NotSupportedException(); // ComboBox выбирает по объекту, обратное преобразование не нужно
+}
+
+/// <summary>
+/// Умножение двух чисел (для MultiBinding): нормализованная координата рамки (0..1)
+/// × размер оверлея в пикселях → пиксели.
+/// </summary>
+public class MultiplyConverter : IMultiValueConverter
+{
+    public object Convert(object[] values, Type targetType, object parameter, CultureInfo culture)
+    {
+        if (values.Length >= 2
+            && values[0] is IConvertible a
+            && values[1] is IConvertible b)
+            return a.ToDouble(culture) * b.ToDouble(culture);
+
+        return 0.0;
+    }
+
+    public object[] ConvertBack(object value, Type[] targetTypes, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+/// <summary>
+/// Цвет рамки лица: (Index, SelectedFaceIndex) → красный (выбрано) / зелёный (нет).
+/// </summary>
+public class FaceBoxBrushConverter : IMultiValueConverter
+{
+    private static readonly Brush Selected = Frozen(Colors.Red);
+    private static readonly Brush Normal = Frozen(Colors.LimeGreen);
+
+    private static Brush Frozen(Color c)
+    {
+        var b = new SolidColorBrush(c);
+        b.Freeze();
+        return b;
+    }
+
+    public object Convert(object[] values, Type targetType, object parameter, CultureInfo culture)
+    {
+        bool selected = values.Length >= 2
+            && values[0] is IConvertible a
+            && values[1] is IConvertible b
+            && a.ToInt32(culture) == b.ToInt32(culture);
+
+        return selected ? Selected : Normal;
+    }
+
+    public object[] ConvertBack(object value, Type[] targetTypes, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+/// <summary>
+/// Толщина рамки лица: (Index, SelectedFaceIndex) → 3 (выбрано) / 2 (нет).
+/// </summary>
+public class FaceBoxThicknessConverter : IMultiValueConverter
+{
+    public object Convert(object[] values, Type targetType, object parameter, CultureInfo culture)
+    {
+        bool selected = values.Length >= 2
+            && values[0] is IConvertible a
+            && values[1] is IConvertible b
+            && a.ToInt32(culture) == b.ToInt32(culture);
+
+        return selected ? 3.0 : 2.0;
+    }
+
+    public object[] ConvertBack(object value, Type[] targetTypes, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
 }

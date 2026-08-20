@@ -91,12 +91,16 @@ public class MediaPlayerService : IDisposable
 
     #region Init / load
 
-    public void Initialize(Dispatcher dispatcher)
+    /// <summary>
+    /// Вызывается на UI-потоке: захватывает <see cref="Dispatcher.CurrentDispatcher"/>
+    /// для маршализации событий/уведомлений в UI (см. <see cref="RaiseUi"/>).
+    /// </summary>
+    public void Initialize()
     {
         if (IsInitialized)
             return; // движок уже запущен
 
-        _dispatcher = dispatcher;
+        _dispatcher = Dispatcher.CurrentDispatcher;
 
         var path = SettingsManager.CurrentSettings.FfmpegPath;
         if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))

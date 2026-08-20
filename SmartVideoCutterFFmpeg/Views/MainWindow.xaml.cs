@@ -13,12 +13,12 @@ public partial class MainWindow : Window
 
         ThemeHelper.Attach(this); // заголовок окна следует за темой
 
-        DataContext = new MainViewModel();
+        DataContext = new MainViewModel(new DialogService());
 
         Closed += OnClosed; // Подписываемся на закрытие окна
     }
 
-    private void OnClosed(object sender, EventArgs e)
+    private void OnClosed(object? sender, EventArgs e)
     {
         if (DataContext is IDisposable disposableViewModel)
         {
