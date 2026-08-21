@@ -1,6 +1,8 @@
 ﻿using System.ComponentModel;
+using System.IO;
 using CommunityToolkit.Mvvm.Input;
 using CommunityToolkit.Mvvm.ComponentModel;
+using SmartVideoCutter.Models;
 using SmartVideoCutter.Models.Video;
 using SmartVideoCutter.Services;
 using SmartVideoCutter.Services.ComputerVision;
@@ -141,7 +143,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         int w = videoInfo.Width, h = videoInfo.Height;
 
         // 1. Список ключевых кадров (ffprobe, быстро) — границы отрезков
-        var keyframes = await Task.Run(() => FFmpegService.GetVideoKeyframes(FilePath));
+        var keyframes = await Task.Run(() => FFmpegProbe.GetVideoKeyframes(FilePath));
         if (keyframes.Count == 0)
             return;
 
@@ -152,10 +154,21 @@ public partial class MainViewModel : ObservableObject, IDisposable
             indeterminate: false, maximum: keyframes.Count);
         var ct = progress.Cts.Token;
 
+        // Вспомогательная строка: алгоритм + где идёт декод (GPU/CPU). ffprobe-проверка кодека
+        // кэшируется — на уже открытом видео это быстро, но делаем в фоне всё равно.
+        string algorithmName = SettingsManager.CurrentSettings.AnalysisAlgorithm ==
+                               AppAnalysisAlgorithm.ThreeBetweenKeyframes
+            ? "быстрый"
+            : "точный";
+        var filePath = FilePath;
+        _ = Task.Run(() => progress.UpdateDetails(
+            $"Алгоритм: {algorithmName} · {FFmpegProbe.DescribeDecoding(filePath)}"));
+
         // 3. Анализ кадров каждого отрезка [keyframe[i], keyframe[i+1]) — алгоритм из настроек.
         //    Логика в FaceRecognizer: нашли человека — отрезок принят, остальные кадры
         //    пропускаем (ранний выход). Отмена: выходим до следующей итерации.
         //    Работа стартует ДО ShowProgress: код после него выполнится только после закрытия окна.
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var task = Task.Run(() =>
         {
             recognizer.Analyze(
@@ -176,6 +189,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             _dialogs.ShowProgress(progress, modal: true); // модально: основное окно заблокировано
             await task;
+            sw.Stop();
+            var bench =
+                $"[BENCH] Анализ: {sw.Elapsed.TotalSeconds:F1} c, отрезков: {keyframes.Count}, алгоритм: {SettingsManager.CurrentSettings.AnalysisAlgorithm}, threads: {Environment.GetEnvironmentVariable("SVC_FFMPEG_THREADS") ?? "2 (default)"}";
+            Console.WriteLine(bench);
+            try
+            {
+                System.IO.File.AppendAllText(System.IO.Path.Combine(AppContext.BaseDirectory, "bench.log"),
+                    bench + Environment.NewLine);
+            }
+            catch
+            {
+                /* не критично */
+            }
         }
         catch (Exception ex)
         {
@@ -187,6 +213,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         finally
         {
             progress.RequestClose(); // страховка; повторный запрос — Close уже закрытого окна no-op
+            FrameReader.ReleaseDecoders(); // внутрипроцессные декодеры больше не нужны
         }
 
         // Отмена — только по флагу VM: OnClosed → Cts.Cancel() (страховка) отменяет токен
@@ -205,7 +232,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
         foreach (var kf in KeyframeList)
             kf.PropertyChanged += OnKeyframePropertyChanged;
         ExportFileCommand.NotifyCanExecuteChanged();
-        StatusMessage = $"Анализ завершён: {KeyframeList.Count(k => k.IsSelected)}/{KeyframeList.Count} ключевых кадров с лицом";
+        StatusMessage =
+            $"Анализ завершён: {KeyframeList.Count(k => k.IsSelected)}/{KeyframeList.Count} ключевых кадров с лицом";
     }
 
     private bool CanAnalyzeFile() => Player.SelectedFaceIndex >= 0;
@@ -217,20 +245,26 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand(CanExecute = nameof(CanExportFile))]
     private async Task ExportFile()
     {
-        var segments = FFmpegService.BuildSegments(KeyframeList, Player.DurationMs);
+        var segments = VideoExporter.BuildSegments(KeyframeList, Player.DurationMs);
         if (segments.Count == 0)
         {
             StatusMessage = "Нет выбранных ключевых кадров";
             return;
         }
 
-        var outPath = _dialogs.SaveVideoFile(FFmpegService.GetUniqueFileName(FilePath, "_FaceCut"));
+        var outPath = _dialogs.SaveVideoFile(VideoExporter.GetUniqueFileName(FilePath, "_FaceCut"));
         if (outPath == null)
             return;
 
         var progress = new ProgressDialogViewModel("Экспорт видео", "Сборка отрезков...",
             indeterminate: false, maximum: segments.Count);
         var ct = progress.Cts.Token;
+
+        // Видео — stream copy (без перекодирования), аудио — перекодирование для точной нарезки.
+        string audioCodec = Path.GetExtension(outPath).Equals(".avi", StringComparison.OrdinalIgnoreCase)
+            ? "MP3"
+            : "AAC";
+        progress.UpdateDetails($"Видео: без перекодирования · Аудио: перекодирование ({audioCodec})");
 
         // работа стартует ДО ShowProgress: код после него выполнится только после закрытия окна
         var task = Task.Run(() =>
@@ -241,7 +275,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 progress.UpdateProgress(p);
                 progress.UpdateMessage($"Сборка отрезков... ({p}/{segments.Count})");
             });
-            FFmpegService.ExportSegments(FilePath, outPath, segments, report, ct);
+            VideoExporter.ExportSegments(FilePath, outPath, segments, report, ct);
         });
 
         // по завершении работы (успех или ошибка) закрываем окно, если пользователь его ещё не закрыл

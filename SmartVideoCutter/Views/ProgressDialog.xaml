@@ -12,9 +12,28 @@
     WindowStartupLocation="CenterOwner">
     <StackPanel Width="300" Margin="20">
         <TextBlock
-            Margin="0,0,0,10"
+            Margin="0,0,0,4"
             Text="{Binding Message}"
             TextWrapping="Wrap" />
+        <TextBlock
+            Margin="0,0,0,10"
+            FontSize="11"
+            Foreground="{DynamicResource TextBrush}"
+            Opacity="0.75"
+            Text="{Binding Details}"
+            TextWrapping="Wrap">
+            <TextBlock.Style>
+                <Style TargetType="TextBlock">
+                    <Setter Property="Visibility" Value="Visible" />
+                    <Style.Triggers>
+                        <!--  пустая строка — строку не показываем  -->
+                        <DataTrigger Binding="{Binding Details}" Value="">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </TextBlock.Style>
+        </TextBlock>
         <ProgressBar
             Height="20"
             IsIndeterminate="{Binding IsIndeterminate}"

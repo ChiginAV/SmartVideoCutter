@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.InteropServices;
 using FaceAiSharp;
 using FaceAiSharp.Extensions;
@@ -77,8 +78,13 @@ public sealed class FaceRecognizer : IDisposable
             f.Landmarks != null &&
             GenerateReferenceEmbedding(frame, f.BoxPx, f.Landmarks).Dot(reference) >= PersonMatchThreshold);
 
+    /// Окно «хвоста»: последние 0.2 c перед следующим ключевым кадром (≈ 5 кадров при 25 fps).
+    private const double TailWindowSec = 0.2;
+
     /// Анализирует каждый отрезок [keyframe[i], keyframe[i+1]) выбранным алгоритмом,
     /// выставляя Keyframe.IsSelected. onSegmentAnalyzed(i + 1) вызывается после каждого отрезка.
+    /// Оба алгоритма — один проход по кадрам (RunSegments); select-фильтр ffmpeg пропускает
+    /// через pipe только анализируемые кадры, prefetch перекрывает запуск процесса инференсом.
     public void Analyze(string videoPath, IReadOnlyList<Keyframe> keyframes, double durationMs,
         int width, int height, double fps, float[] reference, AppAnalysisAlgorithm algorithm,
         Action<int> onSegmentAnalyzed, CancellationToken ct)
@@ -86,132 +92,158 @@ public sealed class FaceRecognizer : IDisposable
         switch (algorithm)
         {
             case AppAnalysisAlgorithm.ThreeBetweenKeyframes:
-                AnalyzeThreeBetweenKeyframes(videoPath, keyframes, durationMs, width, height, fps,
-                    reference, onSegmentAnalyzed, ct);
+                // «Быстрый»: 3 кадра на отрезок — ключевой, средний и «хвост». Полный декод
+                // отрезка неизбежен (последний кадр зависит от всего GOP), но через pipe
+                // передаются только эти кадры.
+                RunSegments(videoPath, keyframes, durationMs, width, height, reference,
+                    i => SelectExprFast(keyframes, i, durationMs, fps), onSegmentAnalyzed, ct);
                 break;
             default: // ThreePerSecond
-                AnalyzeThreePerSecond(videoPath, keyframes, durationMs, width, height, fps,
-                    reference, onSegmentAnalyzed, ct);
+            {
+                // «Точный»: инференс каждый step-й кадр (step = floor(fps/3), минимум 1;
+                // fps неизвестен → 1) + «хвост».
+                int step = fps > 0 ? Math.Max(1, (int)(fps / 3.0)) : 1;
+                RunSegments(videoPath, keyframes, durationMs, width, height, reference,
+                    i => SelectExprPrecise(keyframes, i, durationMs, step), onSegmentAnalyzed, ct);
                 break;
+            }
         }
     }
 
-    /// «Точный» алгоритм: инференс каждый step-й кадр (step = floor(fps/3), минимум 1;
-    /// fps неизвестен → 1); первый кадр отрезка — ключевой, всегда анализируется.
-    /// Не нашли человека — дополнительно анализируем последний кадр отрезка («хвост» —
-    /// до step-1 кадра перед следующим ключевым кадром).
-    private void AnalyzeThreePerSecond(string videoPath, IReadOnlyList<Keyframe> keyframes,
-        double durationMs, int w, int h, double fps, float[] reference,
+    /// select-фильтр «быстрого» алгоритма: ключевой (первый кадр отрезка), средний (окно в 1 кадр
+    /// вокруг середины по времени; fps неизвестен → пропускаем) и «хвост». n — номер кадра от
+    /// начала отрезка, t — время кадра в секундах от начала отрезка (-ss перед -i сбрасывает pts).
+    private static string SelectExprFast(IReadOnlyList<Keyframe> keyframes, int i, double durationMs, double fps)
+    {
+        // Длительность отрезка (t в select — относительно начала отрезка).
+        double segLen =
+            (((i + 1 < keyframes.Count) ? keyframes[i + 1].Timestamp : durationMs) - keyframes[i].Timestamp) / 1000.0;
+        var parts = new List<string> { "eq(n,0)" }; // ключевой: первый кадр отрезка
+        if (fps > 0)
+        {
+            double mid = segLen / 2.0;
+            parts.Add(
+                $"between(t,{mid.ToString(CultureInfo.InvariantCulture)},{(mid + 1.0 / fps).ToString(CultureInfo.InvariantCulture)})");
+        }
+
+        parts.Add(
+            $"gte(t,{(segLen - TailWindowSec).ToString(CultureInfo.InvariantCulture)})"); // «хвост»: не зависит от fps
+        return string.Join("+", parts);
+    }
+
+    /// select-фильтр «точного» алгоритма: каждый step-й кадр + «хвост». null — фильтр не нужен.
+    private static string? SelectExprPrecise(IReadOnlyList<Keyframe> keyframes, int i, double durationMs, int step)
+    {
+        if (step <= 1)
+            return null; // все кадры («хвост» уже включён)
+
+        double segLen =
+            (((i + 1 < keyframes.Count) ? keyframes[i + 1].Timestamp : durationMs) - keyframes[i].Timestamp) / 1000.0;
+        return $"mod(n,{step})==0+gte(t,{(segLen - TailWindowSec).ToString(CultureInfo.InvariantCulture)})";
+    }
+
+    /// Проход по отрезкам для «точного» алгоритма. selectExpr(i) — выражение select-фильтра
+    /// (n — номер кадра от начала отрезка), null — без фильтра; каждый кадр из pipe отправляется
+    /// в инференс, ранний выход при обнаружении человека.
+    private void RunSegments(string videoPath, IReadOnlyList<Keyframe> keyframes, double durationMs,
+        int width, int height, float[] reference, Func<int, string?> selectExpr,
         Action<int> onSegmentAnalyzed, CancellationToken ct)
     {
-        int step = fps > 0 ? Math.Max(1, (int)(fps / 3.0)) : 1;
+        FramePrefetcher? cur = null; // декодер текущего отрезка
+        FramePrefetcher? next = null; // декодер отрезка i+1 (разогрет параллельно с анализом i)
 
-        for (int i = 0; i < keyframes.Count; i++)
+        // SVC_DEBUG_TIMING=1 — per-segment тайминги в bench.log (диагностика скорости анализа).
+        var timingLog = Environment.GetEnvironmentVariable("SVC_DEBUG_TIMING") == "1";
+        double maxSegMs = 0;
+        int maxSegIdx = -1;
+
+        try
         {
-            if (ct.IsCancellationRequested)
-                break;
-            var kf = keyframes[i];
-            double endMs = (i + 1 < keyframes.Count) ? keyframes[i + 1].Timestamp : durationMs;
-
-            // Последовательное декодирование всех кадров отрезка одним процессом ffmpeg.
-            // using IEnumerator: при раннем выходе (человек найден) Dispose() убивает процесс.
-            using var frames = FFmpegService.ReadFrames(videoPath, kf.Timestamp, endMs, w, h, ct).GetEnumerator();
-            bool found = false;
-            Mat? lastFrame = null; // последний декодированный кадр отрезка (финальная проверка)
-            int frameIndex = 0;
-            try
+            for (int i = 0; i < keyframes.Count; i++)
             {
-                while (!found && frames.MoveNext())
+                if (ct.IsCancellationRequested)
+                    break;
+                var kf = keyframes[i];
+                double endMs = (i + 1 < keyframes.Count) ? keyframes[i + 1].Timestamp : durationMs;
+
+                // Декодер текущего отрезка: разогретый prefetcher или новый.
+                cur = next;
+                next = null;
+                cur ??= new FramePrefetcher(videoPath, kf.Timestamp, endMs, width, height, ct, selectExpr(i));
+
+                // Стартуем декодирование СЛЕДУЮЩЕГО отрезка ДО анализа текущего:
+                // запуск ffmpeg.exe и seek перекрываются работой ONNX.
+                if (i + 1 < keyframes.Count)
+                    next = new FramePrefetcher(videoPath, keyframes[i + 1].Timestamp,
+                        (i + 2 < keyframes.Count) ? keyframes[i + 2].Timestamp : durationMs, width, height, ct,
+                        selectExpr(i + 1));
+
+                var swSeg = System.Diagnostics.Stopwatch.StartNew();
+                try
                 {
-                    if (ct.IsCancellationRequested)
-                        break;
-                    var frame = frames.Current;
-                    if (frameIndex % step == 0)
-                        found = ContainsPerson(frame, reference);
-                    if (found)
-                    {
-                        frame.Dispose();
-                        break;
-                    }
-                    lastFrame?.Dispose();
-                    lastFrame = frame;
-                    frameIndex++;
+                    kf.IsSelected = AnalyzeSegment(cur, reference, ct);
+                    onSegmentAnalyzed(i + 1);
                 }
+                finally
+                {
+                    swSeg.Stop();
+                    if (timingLog && swSeg.Elapsed.TotalMilliseconds > maxSegMs)
+                    {
+                        maxSegMs = swSeg.Elapsed.TotalMilliseconds;
+                        maxSegIdx = i + 1;
+                    }
 
-                // Финальная проверка последнего кадра отрезка (если он ещё не анализировался):
-                // «хвост» (до step-1 кадра) перед следующим ключевым кадром.
-                int lastIndex = frameIndex - 1;
-                bool lastAnalyzed = lastIndex % step == 0;
-                if (!found && !ct.IsCancellationRequested && lastFrame != null && !lastAnalyzed)
-                    found = ContainsPerson(lastFrame, reference);
+                    // Dispose убивает ffmpeg текущего отрезка: при раннем выходе (человек найден)
+                    // или исключении остаток не декодируется — ранний выход сохранён.
+                    cur.Dispose();
+                    cur = null;
+                }
             }
-            finally
+        }
+        finally
+        {
+            cur?.Dispose(); // исключение до анализа отрезка (создан новый prefetcher)
+            next?.Dispose(); // отмена/конец: разогретый, но не использованный prefetcher
+
+            if (timingLog && maxSegIdx >= 0)
             {
-                lastFrame?.Dispose();
+                try
+                {
+                    System.IO.File.AppendAllText(
+                        System.IO.Path.Combine(AppContext.BaseDirectory, "bench.log"),
+                        $"[TIMING] медленный отрезок: #{maxSegIdx} — {maxSegMs:F0} мс" + Environment.NewLine);
+                }
+                catch
+                {
+                    /* не критично */
+                }
             }
-
-            kf.IsSelected = found;
-            onSegmentAnalyzed(i + 1);
         }
     }
 
-    /// «Быстрый» алгоритм: ровно 3 кадра на отрезок — ключевой (первый), средний
-    /// (индекс оценивается по fps; fps неизвестен → пропускаем) и последний перед
-    /// следующим ключевым кадром.
-    private void AnalyzeThreeBetweenKeyframes(string videoPath, IReadOnlyList<Keyframe> keyframes,
-        double durationMs, int w, int h, double fps, float[] reference,
-        Action<int> onSegmentAnalyzed, CancellationToken ct)
+    /// Анализ одного отрезка из потока кадров prefetcher'а: инференс на каждом кадре из pipe
+    /// (select-фильтр уже отобрал нужные, включая «хвост»), ранний выход при обнаружении человека.
+    private bool AnalyzeSegment(FramePrefetcher frames, float[] reference, CancellationToken ct)
     {
-        for (int i = 0; i < keyframes.Count; i++)
+        while (true)
         {
             if (ct.IsCancellationRequested)
                 break;
-            var kf = keyframes[i];
-            double endMs = (i + 1 < keyframes.Count) ? keyframes[i + 1].Timestamp : durationMs;
-
-            // Индекс среднего кадра (оценка по fps; fps неизвестен → пропускаем).
-            long estFrames = fps > 0 ? Math.Max(1, (long)((endMs - kf.Timestamp) / 1000.0 * fps)) : 0;
-            int midIndex = estFrames > 0 ? (int)(estFrames / 2) : -1;
-
-            // Последовательное декодирование всех кадров отрезка одним процессом ffmpeg.
-            // using IEnumerator: при раннем выходе (человек найден) Dispose() убивает процесс.
-            using var frames = FFmpegService.ReadFrames(videoPath, kf.Timestamp, endMs, w, h, ct).GetEnumerator();
-            bool found = false;
-            Mat? lastFrame = null; // последний декодированный кадр отрезка (финальная проверка)
-            int frameIndex = 0;
+            var frame = frames.TakeNext();
+            if (frame == null)
+                break; // конец отрезка
             try
             {
-                while (!found && frames.MoveNext())
-                {
-                    if (ct.IsCancellationRequested)
-                        break;
-                    var frame = frames.Current;
-                    if (frameIndex == 0 || frameIndex == midIndex)
-                        found = ContainsPerson(frame, reference);
-                    if (found)
-                    {
-                        frame.Dispose();
-                        break;
-                    }
-                    lastFrame?.Dispose();
-                    lastFrame = frame;
-                    frameIndex++;
-                }
-
-                // Финальная проверка последнего кадра отрезка (если он ещё не анализировался).
-                int lastIndex = frameIndex - 1;
-                bool lastAnalyzed = lastIndex == 0 || lastIndex == midIndex;
-                if (!found && !ct.IsCancellationRequested && lastFrame != null && !lastAnalyzed)
-                    found = ContainsPerson(lastFrame, reference);
+                if (ContainsPerson(frame, reference))
+                    return true;
             }
             finally
             {
-                lastFrame?.Dispose();
+                frame.Dispose();
             }
-
-            kf.IsSelected = found;
-            onSegmentAnalyzed(i + 1);
         }
+
+        return false;
     }
 
     /// Кроп с margin (аффинному преобразованию нужен контекст вокруг лица).

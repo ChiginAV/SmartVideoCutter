@@ -16,6 +16,9 @@ public partial class ProgressDialogViewModel : ObservableObject
     [ObservableProperty] private string _message;
     [ObservableProperty] private double _progressValue;
 
+    /// Вспомогательная строка под сообщением (алгоритм, GPU/CPU и т.п.); пусто — не показывается.
+    [ObservableProperty] private string _details = string.Empty;
+
     /// Заголовок окна (константа диалога).
     public string Title { get; }
 
@@ -54,6 +57,9 @@ public partial class ProgressDialogViewModel : ObservableObject
 
     /// <summary>Обновление текста (может вызываться из фоногого потока).</summary>
     public void UpdateMessage(string message) => PostToUi(() => Message = message);
+
+    /// <summary>Обновление вспомогательной строки (может вызываться из фонового потока).</summary>
+    public void UpdateDetails(string details) => PostToUi(() => Details = details);
 
     /// <summary>Кнопка «Отмена» (или Esc, т.к. IsCancel=True): отмена работы + закрытие окна.</summary>
     [RelayCommand]

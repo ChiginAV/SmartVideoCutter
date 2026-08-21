@@ -43,8 +43,22 @@ public partial class App : Application
 
         TaskScheduler.UnobservedTaskException += (s, e) =>
         {
-            if (MainWindow?.DataContext is MainViewModel vm)
-                vm.StatusMessage = "Ошибка: " + e.Exception.Message;
+            // Событие приходит из финализатора/GC-потока — Application.MainWindow требует UI-поток
+            // (иначе InvalidOperationException из Dispatcher.VerifyAccess). Маршализуем через Dispatcher.
+            try
+            {
+                var ex = e.Exception;
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (MainWindow?.DataContext is MainViewModel vm)
+                        vm.StatusMessage = "Ошибка: " + ex.Message;
+                }));
+            }
+            catch
+            {
+                /* приложение закрывается — не критично */
+            }
+
             e.SetObserved();
         };
     }

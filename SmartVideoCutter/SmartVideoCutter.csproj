@@ -18,6 +18,8 @@
         <PackageReference Include="FaceAiSharp" Version="0.6.35"/>
         <PackageReference Include="FaceAiSharp.Bundle" Version="0.6.35"/>
         <PackageReference Include="FFMediaToolkit" Version="4.8.1"/>
+        <!-- Версия обязана совпадать с нативными DLL (ffmpeg 7.1.1: avcodec-61, avformat-61) -->
+        <PackageReference Include="FFmpeg.AutoGen" Version="7.1.1"/>
         <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.24.4"/>
         <PackageReference Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.142"/>
         <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260627"/>
